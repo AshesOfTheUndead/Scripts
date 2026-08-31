@@ -140,9 +140,13 @@ end
 
 local function customerNear(pos, radius)
     for _, c in ipairs(WS.Customers:GetChildren()) do
-        local hr = c:FindFirstChild("HumanoidRootPart") or c.PrimaryPart
-        if hr and (hr.Position - pos).Magnitude <= (radius or 14) then
-            return true
+        -- customers can be Folders wrapping models, or models directly
+        local containers = (c:IsA("Folder") and c:GetChildren()) or { c }
+        for _, m in ipairs(containers) do
+            local hr = m:IsA("Model") and (m:FindFirstChild("HumanoidRootPart") or m.PrimaryPart)
+            if hr and (hr.Position - pos).Magnitude <= (radius or 14) then
+                return true
+            end
         end
     end
     return false
