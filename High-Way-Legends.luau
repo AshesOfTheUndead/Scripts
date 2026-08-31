@@ -1,25 +1,3 @@
---[[
-=====================================================================
-  HIGHWAY LEGENDS HUB - v7.0 FINAL
-=====================================================================
-  The complete, polished build.
-
-  Fixes over v6.1
-    - Hitbox restore now resets Transparency (no more ghost boxes)
-    - Strict enter/exit expansion - no +100 buffer jank
-    - Visuals via SelectionBox outlines, never paint the part
-    - Adaptive cooldown only tunes while actually driving, clamped 0.8-4s
-    - Full Auto master toggle: farm + orbit + anti-AFK in one click
-    - Orbit safety re-pin: car can never drift or fly away
-
-  Verified mechanics
-    - HitCar pays ~$37 per unique traffic car per dedup window
-    - Server gate: seated in owned car + real speed >= 40 studs/s
-    - Orbit spoof: genuine circular velocity, zero displacement
-    - Paint remotes: Primary / Secondary / Rim / Caliper / Interior
-=====================================================================
-]]
-
 local WindUI = loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"))()
 
 -- ================= 1 - SERVICES & REMOTES =================
