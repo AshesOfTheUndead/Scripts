@@ -1,23 +1,3 @@
---[[
-=====================================================================
-  GAME STORE TYCOON HUB - v2.0 FINAL
-=====================================================================
-  Verified mechanics this build runs on
-    - Money: Control.Money:FireServer(amount, MoneyCode.make(userId, amount))
-      Client-computable hash, server trusts it. +$50K verified.
-      WARNING (measured): a single 4.29 BILLION call triggers anticheat
-      and reverts to last save. Stay under ~1M per call; use the drip.
-    - Restock: Control.Restock:FireServer(emptyStand) - empty = Transparency 1
-    - Register: RegisterPrompt (ActionText "Checkout") takes customer
-      orders; Info.Sale popup collects via Control.Money
-    - Delivery: trucks spawn dynamically - scan Vehicles + lot spots,
-      fire ProximityPrompt when boxes > 0
-    - Robbers: stands get RobberTag decals; recovery = takegame
-      FireServer(stand, "untag") + (stand, "restock") like the game's
-      own security-employee capture sequence
-=====================================================================
-]]
-
 local WindUI = loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"))()
 
 local Players     = game:GetService("Players")
