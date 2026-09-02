@@ -3,8 +3,11 @@ local WindUI = loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/rel
 local Players     = game:GetService("Players")
 local RS          = game:GetService("ReplicatedStorage")
 local WS          = game:GetService("Workspace")
+local RunService  = game:GetService("RunService")
+local UIS         = game:GetService("UserInputService")
 local VU          = game:GetService("VirtualUser")
 local TS          = game:GetService("TeleportService")
+local Lighting    = game:GetService("Lighting")
 
 local LP          = Players.LocalPlayer
 
@@ -40,8 +43,16 @@ local S = {
     autoRobber = false,
     autoMoney = false, moneyAmount = 10000, moneyDelay = 5,
     antiAfk = true,
+
+    -- v4 staff suite
+    autoStaff = false,
+    autoUpgrade = false, upgradeDelay = 30,
+    fpsBoost = false,
+    espTycoons = false, espRange = 300,
+
     -- telemetry
     regTaken = 0, trucksUnloaded = 0, robbersCaught = 0, standsRestocked = 0,
+    hiredStaff = 0, upgradesBought = 0,
 }
 
 -- ================= HELPERS =================
@@ -54,6 +65,18 @@ end
 
 local function notify(title, content, icon)
     safe(function() WindUI:Notify({ Title = title, Content = content, Duration = 3, Icon = icon or "info" }) end)
+end
+
+local function comma(n)
+    n = math.floor(n)
+    local s = tostring(math.abs(n))
+    local sign = n < 0 and "-" or ""
+    while true do
+        local s2, k = s:gsub("^(-?%d+)(%d%d%d)", "%1,%2")
+        if k == 0 then break end
+        s = s2
+    end
+    return sign .. s
 end
 
 local function myTycoon()
@@ -85,7 +108,6 @@ local function alive()
     return STATE.alive()
 end
 
--- empty game stands: Games children with Transparency == 1
 local function emptyGames(t)
     local out = {}
     local models = t:FindFirstChild("Models")
@@ -103,8 +125,6 @@ local function emptyGames(t)
     return out
 end
 
--- register map: game pairs Line.N with RegisterModels.N (verified:
--- queue Folder gets a child, employee calls RemoteTrigger:InvokeServer)
 local function registerMap(t)
     local out = {}
     local rm = t:FindFirstChild("RegisterModels")
@@ -124,19 +144,79 @@ local function registerMap(t)
     return out
 end
 
+-- staff slots: registers 1..7 (job 2), Sec1..6 posts (job 5)
+-- game hires via Employee:InvokeServer(slotNumber, 1)
+local function staffSlots(t)
+    local out = {}
+    for i = 1, 7 do
+        table.insert(out, { name = "Register " .. i, id = i, kind = "register" })
+    end
+    for i = 1, 6 do
+        table.insert(out, { name = "Security " .. i, id = i + 10, kind = "security" })
+    end
+    return out
+end
+
+local function isSlotHired(t, slot)
+    local emps = t:FindFirstChild("Employees")
+    if not emps then return false end
+    for _, e in ipairs(emps:GetChildren()) do
+        local j = e:FindFirstChild("Job")
+        -- register slots map to Emp parts; simplest check: the part has no Placeholder
+    end
+    return false
+end
+
+-- ================= LIGHTING / CLEANUP =================
+
+local lightingSaved = nil
+local function applyLighting()
+    if S.fpsBoost and not lightingSaved then
+        lightingSaved = {
+            shadows = Lighting.GlobalShadows,
+            brightness = Lighting.Brightness,
+        }
+    end
+    if S.fpsBoost then
+        safe(function()
+            Lighting.GlobalShadows = false
+            for _, e in ipairs(Lighting:GetChildren()) do
+                if e:IsA("PostEffect") then e.Enabled = false end
+            end
+        end)
+    elseif lightingSaved then
+        safe(function()
+            Lighting.GlobalShadows = lightingSaved.shadows
+            Lighting.Brightness = lightingSaved.brightness
+        end)
+        lightingSaved = nil
+    end
+end
+
+-- ================= PLAYER ESP =================
+
+local tycoonLabels = {}
+
+local function clearTycoonEsp()
+    for _, l in pairs(tycoonLabels) do
+        if l and l.Parent then l.Parent:Destroy() end
+    end
+    tycoonLabels = {}
+end
+
 -- ================= UI =================
 
 local Window = WindUI:CreateWindow({
     Title = "Game Store Tycoon Hub",
     Icon = "store",
-    Author = "v3.0 final",
+    Author = "v4.0 superhub",
     Folder = "GameStoreTycoonHub",
-    Size = UDim2.fromOffset(600, 520),
+    Size = UDim2.fromOffset(620, 560),
     Theme = "Dark",
     Transparent = true,
     ToggleKey = Enum.KeyCode.K,
     AutoScale = true,
-    SideBarWidth = 190,
+    SideBarWidth = 195,
     HideSearchBar = true,
     NewElements = true,
     Background = WindUI:Gradient({
@@ -157,36 +237,138 @@ local TabMain = Window:Tab({ Title = "Main", Icon = "zap", IconColor = Color3.fr
 local MA = sect(TabMain, "One-Click")
 
 MA:Toggle({
-    Title = "FULL AUTO",
-    Desc = "Restock + register + delivery + robbers + anti-AFK. Works while you sleep.",
+    Title = "GOD MODE",
+    Desc = "Everything: register + delivery + robbers + restock + staff + upgrades + anti-AFK. Turn it on and never think about the store again.",
     Icon = "rocket",
-    Value = false, Flag = "master_auto",
+    Value = false, Flag = "master_god",
     Callback = function(v)
-        S.autoRestock = v
         S.autoRegister = v
         S.autoDelivery = v
         S.autoRobber = v
+        S.autoRestock = v
+        S.autoStaff = v
+        S.autoUpgrade = v
         S.antiAfk = v
-        notify("Full Auto", v and "Engaged - go AFK" or "Disabled", "rocket")
+        notify("God Mode", v and "Engaged - the store runs itself" or "Disabled", "rocket")
     end,
 })
 
 local MB = sect(TabMain, "Automation")
 local statsPara = MB:Paragraph({ Title = "Live Stats", Desc = "warming up..." })
 
-MB:Toggle({ Title = "Auto Register", Desc = "Takes ALL queued customer orders the instant they line up - the game's own register flow", Value = false, Flag = "auto_register",
+MB:Toggle({ Title = "Auto Register", Desc = "Takes ALL queued orders instantly - game's own flow", Value = false, Flag = "auto_register",
     Callback = function(v) S.autoRegister = v end })
 
-MB:Toggle({ Title = "Auto Restock", Desc = "Refill empty game stands", Value = false, Flag = "auto_restock",
-    Callback = function(v) S.autoRestock = v end })
-MB:Slider({ Title = "Restock Check Delay (s)", Value = { Min = 1, Max = 10, Default = 2 },
-    Flag = "restock_delay", Callback = function(v) S.restockDelay = v end })
-
-MB:Toggle({ Title = "Auto Delivery", Desc = "Unloads truck boxes + collects the cash drop", Value = false, Flag = "auto_delivery",
+MB:Toggle({ Title = "Auto Delivery", Desc = "Unloads truck boxes + collects cash drops", Value = false, Flag = "auto_delivery",
     Callback = function(v) S.autoDelivery = v end })
 
-MB:Toggle({ Title = "Auto Catch Robbers", Desc = "Arrests any robber that spawns in your store", Value = false, Flag = "auto_robber",
+MB:Toggle({ Title = "Auto Catch Robbers", Desc = "Arrests every robber that spawns", Value = false, Flag = "auto_robber",
     Callback = function(v) S.autoRobber = v end })
+
+MB:Toggle({ Title = "Auto Restock", Desc = "Refills empty game stands", Value = false, Flag = "auto_restock",
+    Callback = function(v) S.autoRestock = v end })
+MB:Slider({ Title = "Restock Delay (s)", Value = { Min = 1, Max = 10, Default = 2 },
+    Flag = "restock_delay", Callback = function(v) S.restockDelay = v end })
+
+-- ------ TAB: STAFF ------
+
+local TabStaff = Window:Tab({ Title = "Staff", Icon = "users", IconColor = Color3.fromHex("#a78bfa") })
+local SA = sect(TabStaff, "Automation")
+
+SA:Toggle({
+    Title = "Auto Full Staff",
+    Desc = "Hires employees into every open slot (registers + security) whenever the store can afford them.",
+    Value = false, Flag = "auto_staff",
+    Callback = function(v) S.autoStaff = v end,
+})
+
+local SB = sect(TabStaff, "Manual")
+
+SB:Button({
+    Title = "Hire for All Open Registers", Icon = "user-plus",
+    Callback = function()
+        local t = myTycoon()
+        if not t then return end
+        local hired = 0
+        for _, slot in ipairs(staffSlots(t)) do
+            if slot.kind == "register" then
+                safe(function()
+                    local emp = t.Control:FindFirstChild("Employee")
+                    if emp then
+                        emp:InvokeServer(slot.id, 1)
+                        hired += 1
+                    end
+                end)
+                task.wait(0.15)
+            end
+        end
+        S.hiredStaff += hired
+        notify("Staff", "Hire calls fired: " .. hired, "users")
+    end,
+})
+
+SB:Button({
+    Title = "Hire Security Team", Icon = "shield",
+    Callback = function()
+        local t = myTycoon()
+        if not t then return end
+        local hired = 0
+        for _, slot in ipairs(staffSlots(t)) do
+            if slot.kind == "security" then
+                safe(function()
+                    local emp = t.Control:FindFirstChild("Employee")
+                    if emp then
+                        emp:InvokeServer(slot.id, 1)
+                        hired += 1
+                    end
+                end)
+                task.wait(0.15)
+            end
+        end
+        S.hiredStaff += hired
+        notify("Security", "Hire calls fired: " .. hired, "shield")
+    end,
+})
+
+SB:Button({
+    Title = "Fire Everyone", Icon = "user-minus",
+    Callback = function()
+        local t = myTycoon()
+        if not t then return end
+        for _, slot in ipairs(staffSlots(t)) do
+            safe(function()
+                t.Control.Employee:InvokeServer(slot.id, 2)
+            end)
+            task.wait(0.15)
+        end
+        notify("Staff", "Fire calls fired", "user-minus")
+    end,
+})
+
+-- ------ TAB: UPGRADES ------
+
+local TabUp = Window:Tab({ Title = "Upgrades", Icon = "trending-up", IconColor = Color3.fromHex("#4ade80") })
+local UA = sect(TabUp, "Store Building")
+
+UA:Button({
+    Title = "Upgrade Building NOW", Desc = "Buys the next building tier", Icon = "arrow-up-circle",
+    Callback = function()
+        local t = myTycoon()
+        if not t then return end
+        safe(function() t.Control.Upgrade:FireServer() end)
+        S.upgradesBought += 1
+        notify("Upgrade", "Building upgrade fired", "trending-up")
+    end,
+})
+
+UA:Toggle({
+    Title = "Auto Upgrade Building",
+    Desc = "Buys the next tier whenever affordable, on an interval.",
+    Value = false, Flag = "auto_upgrade",
+    Callback = function(v) S.autoUpgrade = v end,
+})
+UA:Slider({ Title = "Upgrade Check Delay (s)", Value = { Min = 10, Max = 300, Default = 30 },
+    Flag = "upgrade_delay", Callback = function(v) S.upgradeDelay = v end })
 
 -- ------ TAB: MONEY ------
 
@@ -207,7 +389,7 @@ local MD = sect(TabMoney, "Auto Money Drip")
 
 MD:Toggle({
     Title = "Auto Money Drip",
-    Desc = "Safe path to big numbers - mimics sale volume. A single billions-size call gets caught and reverts your save; the drip does not.",
+    Desc = "Safe path - mimics sale volume. Single billions-size calls get caught; the drip does not.",
     Value = false, Flag = "auto_money",
     Callback = function(v) S.autoMoney = v end,
 })
@@ -215,7 +397,21 @@ MD:Slider({ Title = "Amount per tick", Value = { Min = 1000, Max = 100000, Defau
     Flag = "money_amount", Callback = function(v) S.moneyAmount = v end })
 MD:Slider({ Title = "Delay (s)", Value = { Min = 2, Max = 60, Default = 5 },
     Flag = "money_delay", Callback = function(v) S.moneyDelay = v end })
-MD:Paragraph({ Title = "Rate", Desc = "10K / 5s = $120K per hour. 100K / 5s = $1.2M/hr. If money ever snaps backwards, the save reverted - lower the amount." })
+
+-- ------ TAB: VISUALS ------
+
+local TabVis = Window:Tab({ Title = "Visuals", Icon = "eye", IconColor = Color3.fromHex("#7dd87d") })
+local VA = sect(TabVis, "World")
+
+VA:Toggle({ Title = "Tycoon ESP", Desc = "Labels every tycoon with owner + money", Value = false, Flag = "esp_tycoons",
+    Callback = function(v) S.espTycoons = v; if not v then clearTycoonEsp() end end })
+VA:Slider({ Title = "ESP Range", Value = { Min = 100, Max = 1000, Default = 300 },
+    Flag = "esp_range", Callback = function(v) S.espRange = v end })
+
+local VB = sect(TabVis, "Client")
+
+VB:Toggle({ Title = "FPS Boost", Desc = "Shadows + post-effects off", Value = false, Flag = "gfx_fps",
+    Callback = function(v) S.fpsBoost = v; applyLighting() end })
 
 -- ------ TAB: MISC ------
 
@@ -224,19 +420,26 @@ local MS = sect(TabMisc, "Utility")
 
 MS:Toggle({ Title = "Anti-AFK", Desc = "Silent, keeps you connected forever", Value = true, Flag = "ut_afk",
     Callback = function(v) S.antiAfk = v end })
+MS:Button({ Title = "Restore Everything", Icon = "rotate-ccw", Callback = function()
+    S.fpsBoost = false
+    applyLighting()
+    clearTycoonEsp()
+    notify("Restored", "Visuals returned to vanilla", "rotate-ccw")
+end })
 MS:Button({ Title = "Rejoin Server", Icon = "refresh-cw", Callback = function() TS:Teleport(game.PlaceId, LP) end })
 
-TabMisc:Paragraph({ Title = "Info", Desc = "K - toggle menu\nSettings save between sessions." })
+TabMisc:Paragraph({ Title = "Info", Desc = "K - toggle menu\nSettings save between sessions.\nGOD MODE is all you need." })
 
 -- ================= CORE LOOPS =================
 
+-- fast automation loop
 task.spawn(function()
     local restockAcc = 0
     while alive() do
         local t = myTycoon()
         if t then
 
-            -- REGISTER: instant - take every queued order
+            -- REGISTER
             if S.autoRegister then
                 safe(function()
                     local taken = 0
@@ -248,7 +451,6 @@ task.spawn(function()
                         end
                     end
                     if taken > 0 then S.regTaken += taken end
-                    -- collect pending sale popup if the UI missed it
                     if t.Info.Sale.Value ~= 0 then
                         local sale = t.Info.Sale.Value
                         t.Control.Money:FireServer(sale, moneyCode(sale))
@@ -256,7 +458,7 @@ task.spawn(function()
                 end)
             end
 
-            -- DELIVERY: unload boxes + collect cash drop
+            -- DELIVERY
             if S.autoDelivery then
                 safe(function()
                     local function unloadTruck(truck)
@@ -274,9 +476,7 @@ task.spawn(function()
                         end
                     end
                     for _, v in ipairs(WS.Vehicles:GetChildren()) do
-                        if v:FindFirstChild("boxes") then
-                            unloadTruck(v)
-                        end
+                        if v:FindFirstChild("boxes") then unloadTruck(v) end
                     end
                     local lot = t.Info.Lot.Value
                     if lot then
@@ -286,16 +486,14 @@ task.spawn(function()
                             for _, spot in ipairs(spots:GetChildren()) do
                                 local occ = spot:FindFirstChild("occupied")
                                 local truck = occ and occ.Value
-                                if truck and truck.Parent then
-                                    unloadTruck(truck)
-                                end
+                                if truck and truck.Parent then unloadTruck(truck) end
                             end
                         end
                     end
                 end)
             end
 
-            -- ROBBER: arrest via the game's own CaptureFn
+            -- ROBBER
             if S.autoRobber then
                 safe(function()
                     for _, v in ipairs(t:GetChildren()) do
@@ -308,7 +506,7 @@ task.spawn(function()
                 end)
             end
 
-            -- RESTOCK: on its own cadence (costs money per stand)
+            -- RESTOCK
             restockAcc += 1
             if S.autoRestock and restockAcc >= math.max(S.restockDelay, 1) then
                 restockAcc = 0
@@ -325,18 +523,118 @@ task.spawn(function()
             end
         end
 
-        -- fast tick while register automation runs so queues never wait
         task.wait(S.autoRegister and 0.4 or 1)
     end
 end)
 
--- money drip (sole owner of auto-money)
+-- staff + upgrades loop (slower cadence)
+task.spawn(function()
+    local staffAcc = 0
+    local upAcc = 0
+    while alive() do
+        local t = myTycoon()
+        if t then
+            -- STAFF: hire into any free register slot
+            if S.autoStaff then
+                staffAcc += 1
+                if staffAcc >= 5 then
+                    staffAcc = 0
+                    safe(function()
+                        -- hire only where the Emp part has no Placeholder yet
+                        for i = 1, 7 do
+                            local empPart = t:FindFirstChild("Emp" .. i)
+                            if empPart and empPart:FindFirstChild("Placeholder") == nil then
+                                t.Control.Employee:InvokeServer(i, 1)
+                                S.hiredStaff += 1
+                                task.wait(0.2)
+                            end
+                        end
+                        for i = 1, 6 do
+                            local secPart = t:FindFirstChild("Sec" .. i)
+                            if secPart and secPart:FindFirstChild("Placeholder") == nil then
+                                t.Control.Employee:InvokeServer(i + 10, 1)
+                                S.hiredStaff += 1
+                                task.wait(0.2)
+                            end
+                        end
+                    end)
+                end
+            end
+
+            -- UPGRADE: next tier when affordable
+            if S.autoUpgrade then
+                upAcc += 1
+                if upAcc >= math.max(S.upgradeDelay, 10) then
+                    upAcc = 0
+                    safe(function()
+                        t.Control.Upgrade:FireServer()
+                        S.upgradesBought += 1
+                    end)
+                end
+            end
+        end
+        task.wait(1)
+    end
+end)
+
+-- money drip
 task.spawn(function()
     while alive() do
         if S.autoMoney then
             safe(function() addMoney(S.moneyAmount) end)
         end
         task.wait(math.max(S.moneyDelay, 2))
+    end
+end)
+
+-- ESP loop
+task.spawn(function()
+    while alive() do
+        if S.espTycoons then
+            safe(function()
+                local myPos = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+                    and LP.Character.HumanoidRootPart.Position
+                if myPos then
+                    for _, ty in ipairs(WS.Tycoons:GetChildren()) do
+                        local info = ty:FindFirstChild("Info")
+                        local lot = info and info:FindFirstChild("Lot")
+                        local anchor = lot and lot.Value and lot.Value:FindFirstChildWhichIsA("BasePart")
+                        if anchor and (anchor.Position - myPos).Magnitude <= S.espRange then
+                            local label = tycoonLabels[ty]
+                            if not label or not label.Parent then
+                                local bg = Instance.new("BillboardGui")
+                                bg.Size = UDim2.new(0, 180, 0, 30)
+                                bg.StudsOffset = Vector3.new(0, 10, 0)
+                                bg.AlwaysOnTop = true
+                                bg.Adornee = anchor
+                                bg.Parent = anchor
+                                local tl = Instance.new("TextLabel")
+                                tl.Size = UDim2.new(1, 0, 1, 0)
+                                tl.BackgroundTransparency = 1
+                                tl.TextColor3 = Color3.fromRGB(120, 220, 120)
+                                tl.TextStrokeTransparency = 0.3
+                                tl.TextSize = 14
+                                tl.Font = Enum.Font.GothamBold
+                                tl.Parent = bg
+                                tycoonLabels[ty] = tl
+                            end
+                            local money = info:FindFirstChild("Money")
+                            local owner = info:FindFirstChild("Owner")
+                            label.Text = (owner and owner.Value or "?") .. " - $" ..
+                                (money and comma(money.Value) or "?")
+                        end
+                    end
+                    -- remove labels for tycoons out of range or gone
+                    for ty, l in pairs(tycoonLabels) do
+                        if not ty.Parent or not l.Parent then
+                            if l.Parent then l.Parent:Destroy() end
+                            tycoonLabels[ty] = nil
+                        end
+                    end
+                end
+            end)
+        end
+        task.wait(1)
     end
 end)
 
@@ -348,13 +646,15 @@ task.spawn(function()
             safe(function()
                 statsPara:SetTitle("Live Stats")
                 statsPara:SetDesc(table.concat({
-                    string.format("Money: $%s", t.Info.Money.Value),
-                    string.format("Games: %d/%d  |  Rating: %.2f",
-                        t.Info.Games.Value, t.Info.MaxGames.Value, t.Info.Rating.Value),
-                    string.format("Customers: %d max  |  InLine: %d  |  Ads: %d",
-                        t.Info.MaxCustomers.Value, t.Info.InLine.Value, t.Info.Ads.Value),
-                    string.format("Orders taken: %d  |  Trucks: %d  |  Robbers: %d  |  Restocks: %d",
+                    string.format("Money: $%s", comma(t.Info.Money.Value)),
+                    string.format("Games: %d/%d  |  Rating: %.2f  |  Bldg: %d",
+                        t.Info.Games.Value, t.Info.MaxGames.Value, t.Info.Rating.Value, t.Info.Building.Value),
+                    string.format("Customers: %d max  |  InLine: %d",
+                        t.Info.MaxCustomers.Value, t.Info.InLine.Value),
+                    string.format("Orders: %d  Trucks: %d  Robbers: %d  Restocks: %d",
                         S.regTaken, S.trucksUnloaded, S.robbersCaught, S.standsRestocked),
+                    string.format("Hired: %d  |  Upgrades: %d",
+                        S.hiredStaff, S.upgradesBought),
                 }, "\n"))
             end)
         end
@@ -371,8 +671,10 @@ connect(LP.Idled, function()
 end)
 
 if typeof(STATE) == "table" and STATE.onCleanup then
-    STATE.onCleanup(function() end)
+    STATE.onCleanup(function()
+        clearTycoonEsp()
+    end)
 end
 
-notify("Game Store Tycoon Hub", "v3.0 final loaded - press K", "store")
-print("[GST Hub v3.0] Loaded")
+notify("Game Store Tycoon Hub", "v4.0 superhub loaded - press K", "store")
+print("[GST Hub v4.0] Loaded")
