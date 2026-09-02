@@ -3,14 +3,10 @@ local WindUI = loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/rel
 local Players     = game:GetService("Players")
 local RS          = game:GetService("ReplicatedStorage")
 local WS          = game:GetService("Workspace")
-local RunService  = game:GetService("RunService")
-local UIS         = game:GetService("UserInputService")
 local VU          = game:GetService("VirtualUser")
 local TS          = game:GetService("TeleportService")
 
 local LP          = Players.LocalPlayer
-local Events      = WS:WaitForChild("Events")
-local takegame    = RS:WaitForChild("Events"):WaitForChild("takegame")
 
 pcall(function() WindUI:SetParent(game:GetService("CoreGui")) end)
 pcall(function() WindUI:SetNotificationLower(true) end)
@@ -44,10 +40,9 @@ local S = {
     autoRobber = false,
     autoMoney = false, moneyAmount = 10000, moneyDelay = 5,
     antiAfk = true,
+    -- telemetry
+    regTaken = 0, trucksUnloaded = 0, robbersCaught = 0, standsRestocked = 0,
 }
-
-local registerPrompts = nil
-local promptScanAt = 0
 
 -- ================= HELPERS =================
 
@@ -90,6 +85,7 @@ local function alive()
     return STATE.alive()
 end
 
+-- empty game stands: Games children with Transparency == 1
 local function emptyGames(t)
     local out = {}
     local models = t:FindFirstChild("Models")
@@ -107,29 +103,25 @@ local function emptyGames(t)
     return out
 end
 
-local function refreshRegisterPrompts(t)
-    local found = {}
-    for _, v in ipairs(t:GetDescendants()) do
-        if v:IsA("ProximityPrompt") and v.ActionText == "Checkout" then
-            table.insert(found, v)
-        end
-    end
-    registerPrompts = found
-    promptScanAt = os.clock()
-end
-
-local function customerNear(pos, radius)
-    for _, c in ipairs(WS.Customers:GetChildren()) do
-        -- customers can be Folders wrapping models, or models directly
-        local containers = (c:IsA("Folder") and c:GetChildren()) or { c }
-        for _, m in ipairs(containers) do
-            local hr = m:IsA("Model") and (m:FindFirstChild("HumanoidRootPart") or m.PrimaryPart)
-            if hr and (hr.Position - pos).Magnitude <= (radius or 14) then
-                return true
+-- register map: game pairs Line.N with RegisterModels.N (verified:
+-- queue Folder gets a child, employee calls RemoteTrigger:InvokeServer)
+local function registerMap(t)
+    local out = {}
+    local rm = t:FindFirstChild("RegisterModels")
+    local line = t:FindFirstChild("Line")
+    if rm and line then
+        for _, l in ipairs(line:GetChildren()) do
+            local n = l.Name:match("^(%d+)$")
+            if n then
+                local reg = rm:FindFirstChild(n)
+                local rt = reg and reg:FindFirstChild("RemoteTrigger")
+                if rt and rt:IsA("RemoteFunction") then
+                    table.insert(out, { lineFolder = l, trigger = rt, n = n })
+                end
             end
         end
     end
-    return false
+    return out
 end
 
 -- ================= UI =================
@@ -137,7 +129,7 @@ end
 local Window = WindUI:CreateWindow({
     Title = "Game Store Tycoon Hub",
     Icon = "store",
-    Author = "v2.0 final",
+    Author = "v3.0 final",
     Folder = "GameStoreTycoonHub",
     Size = UDim2.fromOffset(600, 520),
     Theme = "Dark",
@@ -182,18 +174,18 @@ MA:Toggle({
 local MB = sect(TabMain, "Automation")
 local statsPara = MB:Paragraph({ Title = "Live Stats", Desc = "warming up..." })
 
+MB:Toggle({ Title = "Auto Register", Desc = "Takes ALL queued customer orders the instant they line up - the game's own register flow", Value = false, Flag = "auto_register",
+    Callback = function(v) S.autoRegister = v end })
+
 MB:Toggle({ Title = "Auto Restock", Desc = "Refill empty game stands", Value = false, Flag = "auto_restock",
     Callback = function(v) S.autoRestock = v end })
 MB:Slider({ Title = "Restock Check Delay (s)", Value = { Min = 1, Max = 10, Default = 2 },
     Flag = "restock_delay", Callback = function(v) S.restockDelay = v end })
 
-MB:Toggle({ Title = "Auto Register", Desc = "Takes customer orders at Checkout prompts + collects sales", Value = false, Flag = "auto_register",
-    Callback = function(v) S.autoRegister = v end })
-
-MB:Toggle({ Title = "Auto Delivery", Desc = "Collects any truck that arrives at your lot", Value = false, Flag = "auto_delivery",
+MB:Toggle({ Title = "Auto Delivery", Desc = "Unloads truck boxes + collects the cash drop", Value = false, Flag = "auto_delivery",
     Callback = function(v) S.autoDelivery = v end })
 
-MB:Toggle({ Title = "Auto Catch Robbers", Desc = "Restores robbed stands + untag + restock, like Security capture", Value = false, Flag = "auto_robber",
+MB:Toggle({ Title = "Auto Catch Robbers", Desc = "Arrests any robber that spawns in your store", Value = false, Flag = "auto_robber",
     Callback = function(v) S.autoRobber = v end })
 
 -- ------ TAB: MONEY ------
@@ -215,7 +207,7 @@ local MD = sect(TabMoney, "Auto Money Drip")
 
 MD:Toggle({
     Title = "Auto Money Drip",
-    Desc = "Safe path to big numbers: mimics sale volume. A single billions-size call gets caught by anticheat and reverts your save - the drip does not.",
+    Desc = "Safe path to big numbers - mimics sale volume. A single billions-size call gets caught and reverts your save; the drip does not.",
     Value = false, Flag = "auto_money",
     Callback = function(v) S.autoMoney = v end,
 })
@@ -223,7 +215,7 @@ MD:Slider({ Title = "Amount per tick", Value = { Min = 1000, Max = 100000, Defau
     Flag = "money_amount", Callback = function(v) S.moneyAmount = v end })
 MD:Slider({ Title = "Delay (s)", Value = { Min = 2, Max = 60, Default = 5 },
     Flag = "money_delay", Callback = function(v) S.moneyDelay = v end })
-MD:Paragraph({ Title = "Rate", Desc = "10K / 5s = $120K per hour per 10K tick. 100K / 5s = $1.2M/hr. Watch Live Stats - if money ever snaps backwards, the save reverted: lower the amount." })
+MD:Paragraph({ Title = "Rate", Desc = "10K / 5s = $120K per hour. 100K / 5s = $1.2M/hr. If money ever snaps backwards, the save reverted - lower the amount." })
 
 -- ------ TAB: MISC ------
 
@@ -234,45 +226,29 @@ MS:Toggle({ Title = "Anti-AFK", Desc = "Silent, keeps you connected forever", Va
     Callback = function(v) S.antiAfk = v end })
 MS:Button({ Title = "Rejoin Server", Icon = "refresh-cw", Callback = function() TS:Teleport(game.PlaceId, LP) end })
 
-TabMisc:Paragraph({ Title = "Info", Desc = "K - toggle menu\nSettings save between sessions.\nStand near your registers/lot when possible - some prompts check distance." })
+TabMisc:Paragraph({ Title = "Info", Desc = "K - toggle menu\nSettings save between sessions." })
 
 -- ================= CORE LOOPS =================
 
--- automation loop
 task.spawn(function()
-    local robberTick = 0
+    local restockAcc = 0
     while alive() do
         local t = myTycoon()
         if t then
 
-            -- RESTOCK (verified)
-            if S.autoRestock then
-                safe(function()
-                    local empties = emptyGames(t)
-                    if #empties > 0 then
-                        for _, g in ipairs(empties) do
-                            t.Control.Restock:FireServer(g)
-                        end
-                        t.Control.Update:FireServer()
-                    end
-                end)
-            end
-
-            -- REGISTER: fire Checkout prompts when a customer waits nearby
+            -- REGISTER: instant - take every queued order
             if S.autoRegister then
                 safe(function()
-                    if not registerPrompts or (os.clock() - promptScanAt) > 15 then
-                        refreshRegisterPrompts(t)
-                    end
-                    for _, p in ipairs(registerPrompts) do
-                        if p.Parent and p.Enabled then
-                            local anchorPart = p.Parent
-                            if customerNear(anchorPart.Position, 14) then
-                                fireproximityprompt(p)
-                            end
+                    local taken = 0
+                    for _, r in ipairs(registerMap(t)) do
+                        local folder = r.lineFolder:FindFirstChild("Folder")
+                        if folder and #folder:GetChildren() > 0 then
+                            r.trigger:InvokeServer()
+                            taken += 1
                         end
                     end
-                    -- collect pending sale popup (verified money call)
+                    if taken > 0 then S.regTaken += taken end
+                    -- collect pending sale popup if the UI missed it
                     if t.Info.Sale.Value ~= 0 then
                         local sale = t.Info.Sale.Value
                         t.Control.Money:FireServer(sale, moneyCode(sale))
@@ -280,36 +256,38 @@ task.spawn(function()
                 end)
             end
 
-            -- DELIVERY: trucks are dynamic - scan Vehicles + lot spots
+            -- DELIVERY: unload boxes + collect cash drop
             if S.autoDelivery then
                 safe(function()
+                    local function unloadTruck(truck)
+                        if not (truck and truck.Parent and truck.PrimaryPart) then return end
+                        local boxes = truck:FindFirstChild("boxes")
+                        if not boxes then return end
+                        local remote = truck.PrimaryPart:FindFirstChild("Remote")
+                        if remote and boxes.Value > 0 then
+                            remote:Fire()
+                            S.trucksUnloaded += 1
+                        end
+                        local pp = truck.PrimaryPart:FindFirstChildOfClass("ProximityPrompt")
+                        if pp and pp.Enabled and boxes.Value <= 0 then
+                            fireproximityprompt(pp)
+                        end
+                    end
                     for _, v in ipairs(WS.Vehicles:GetChildren()) do
-                        local b = v:FindFirstChild("boxes")
-                        if b and b.Value > 0 and v.PrimaryPart then
-                            local pp = v.PrimaryPart:FindFirstChildOfClass("ProximityPrompt")
-                            if pp and pp.Enabled then
-                                fireproximityprompt(pp)
-                            end
+                        if v:FindFirstChild("boxes") then
+                            unloadTruck(v)
                         end
                     end
                     local lot = t.Info.Lot.Value
                     if lot then
                         local tp = lot:FindFirstChild("truckpath")
-                        if tp then
-                            local spots = tp:FindFirstChild("spots")
-                            if spots then
-                                for _, spot in ipairs(spots:GetChildren()) do
-                                    for _, child in ipairs(spot:GetChildren()) do
-                                        if child:IsA("Model") then
-                                            local b = child:FindFirstChild("boxes")
-                                            if b and b.Value > 0 and child.PrimaryPart then
-                                                local pp = child.PrimaryPart:FindFirstChildOfClass("ProximityPrompt")
-                                                if pp and pp.Enabled then
-                                                    fireproximityprompt(pp)
-                                                end
-                                            end
-                                        end
-                                    end
+                        local spots = tp and tp:FindFirstChild("spots")
+                        if spots then
+                            for _, spot in ipairs(spots:GetChildren()) do
+                                local occ = spot:FindFirstChild("occupied")
+                                local truck = occ and occ.Value
+                                if truck and truck.Parent then
+                                    unloadTruck(truck)
                                 end
                             end
                         end
@@ -317,31 +295,38 @@ task.spawn(function()
                 end)
             end
 
-            -- ROBBER: untag + restock robbed stands (game's own recovery)
-            robberTick += 1
-            if S.autoRobber and robberTick >= 2 then
-                robberTick = 0
+            -- ROBBER: arrest via the game's own CaptureFn
+            if S.autoRobber then
                 safe(function()
-                    local tagged = {}
-                    for _, d in ipairs(t:GetDescendants()) do
-                        if d.Name == "RobberTag" and d.Parent then
-                            local decal = d.Parent
-                            local part = decal.Parent
-                            if part and part:IsA("BasePart") then
-                                table.insert(tagged, { part = part, tag = d })
-                            end
+                    for _, v in ipairs(t:GetChildren()) do
+                        if v:IsA("Folder") and v:FindFirstChild("CaptureFn")
+                            and v:FindFirstChild("Captured") and not v.Captured.Value then
+                            pcall(function() v.CaptureFn:Invoke() end)
+                            S.robbersCaught += 1
                         end
                     end
-                    for _, e in ipairs(tagged) do
-                        takegame:FireServer(e.part, "restock")
-                        takegame:FireServer(e.part, "untag")
-                        e.tag:Destroy()
+                end)
+            end
+
+            -- RESTOCK: on its own cadence (costs money per stand)
+            restockAcc += 1
+            if S.autoRestock and restockAcc >= math.max(S.restockDelay, 1) then
+                restockAcc = 0
+                safe(function()
+                    local empties = emptyGames(t)
+                    if #empties > 0 then
+                        for _, g in ipairs(empties) do
+                            t.Control.Restock:FireServer(g)
+                        end
+                        t.Control.Update:FireServer()
+                        S.standsRestocked += #empties
                     end
                 end)
             end
         end
 
-        task.wait(1)
+        -- fast tick while register automation runs so queues never wait
+        task.wait(S.autoRegister and 0.4 or 1)
     end
 end)
 
@@ -368,6 +353,8 @@ task.spawn(function()
                         t.Info.Games.Value, t.Info.MaxGames.Value, t.Info.Rating.Value),
                     string.format("Customers: %d max  |  InLine: %d  |  Ads: %d",
                         t.Info.MaxCustomers.Value, t.Info.InLine.Value, t.Info.Ads.Value),
+                    string.format("Orders taken: %d  |  Trucks: %d  |  Robbers: %d  |  Restocks: %d",
+                        S.regTaken, S.trucksUnloaded, S.robbersCaught, S.standsRestocked),
                 }, "\n"))
             end)
         end
@@ -387,5 +374,5 @@ if typeof(STATE) == "table" and STATE.onCleanup then
     STATE.onCleanup(function() end)
 end
 
-notify("Game Store Tycoon Hub", "v2.0 final loaded - press K", "store")
-print("[GST Hub v2.0] Loaded")
+notify("Game Store Tycoon Hub", "v3.0 final loaded - press K", "store")
+print("[GST Hub v3.0] Loaded")
