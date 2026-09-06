@@ -997,10 +997,10 @@ FS:Toggle({
 
 local FT = sect(TabFarm, "Tuning")
 
-FT:Slider({ Title = "Width X",  Value = { Min = 20, Max = 300, Default = 80 }, Flag = "hb_x", Callback = function(v) S.hbX = v end })
-FT:Slider({ Title = "Height Y", Value = { Min = 10, Max = 100, Default = 30 }, Flag = "hb_y", Callback = function(v) S.hbY = v end })
-FT:Slider({ Title = "Length Z", Value = { Min = 20, Max = 400, Default = 120 }, Flag = "hb_z", Callback = function(v) S.hbZ = v end })
-ui.radius   = FT:Slider({ Title = "Detection Radius", Value = { Min = 50, Max = 600, Default = 300 }, Flag = "hb_radius", Callback = function(v) S.radius = v end })
+FT:Slider({ Title = "Width X",  Value = { Min = 20, Max = 600, Default = 100 }, Flag = "hb_x", Callback = function(v) S.hbX = v end })
+FT:Slider({ Title = "Height Y", Value = { Min = 10, Max = 200, Default = 45 }, Flag = "hb_y", Callback = function(v) S.hbY = v end })
+FT:Slider({ Title = "Length Z", Value = { Min = 20, Max = 800, Default = 150 }, Flag = "hb_z", Callback = function(v) S.hbZ = v end })
+ui.radius   = FT:Slider({ Title = "Detection Radius", Value = { Min = 40, Max = 900, Default = 300 }, Flag = "hb_radius", Callback = function(v) S.radius = v end })
 ui.cooldown = FT:Slider({ Title = "Re-hit Cooldown (s)", Desc = "Per car, lower = more calls",
     Value = { Min = 1, Max = 8, Default = 2 }, Flag = "hb_cd", Callback = function(v) S.cooldown, S.autoCd = v, v end })
 FT:Toggle({ Title = "Hitbox Visual", Desc = "Wireframe outlines on expanded hitboxes",
