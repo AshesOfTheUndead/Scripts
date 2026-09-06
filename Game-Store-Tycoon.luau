@@ -39,7 +39,7 @@ local S = {
     autoRestock = false, restockDelay = 2,
     autoDelivery = false,
     autoRobber = false,
-    autoStaff = false, staffTarget = 30,
+    autoStaff = false, staffTarget = 7,
     autoFirePaid = false,
     autoMoney = false, moneyAmount = 10000, moneyDelay = 5,
     autoSave = true, saveDelay = 120,
