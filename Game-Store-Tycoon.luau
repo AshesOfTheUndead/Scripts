@@ -1,3 +1,5 @@
+if game.PlaceId ~= 10963175 then return end
+
 local WindUI = loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"))()
 
 local Players     = game:GetService("Players")
@@ -11,6 +13,13 @@ local LP          = Players.LocalPlayer
 
 pcall(function() WindUI:SetParent(game:GetService("CoreGui")) end)
 pcall(function() WindUI:SetNotificationLower(true) end)
+
+-- ================= CONSTANTS =================
+
+local CAP = 1e9                -- hard cap: above this, money resets to 0
+local SAFE_CEILING = 950e6     -- drip stops here
+local TEAM_PLAN = { { job = 2, count = 7 }, { job = 4, count = 3 } }
+local JOB_NAMES = { [2] = "Register", [3] = "Restocker", [4] = "Delivery", [5] = "Security" }
 
 -- ================= MONEYCODE REPLICA =================
 
@@ -35,21 +44,31 @@ end
 -- ================= STATE =================
 
 local S = {
+    -- automation
     autoRegister = false,
     autoRestock = false, restockDelay = 2,
     autoDelivery = false,
     autoRobber = false,
-    autoStaff = false, staffTarget = 7,
+    autoTeam = false,
     autoFirePaid = false,
     autoMoney = false, moneyAmount = 10000, moneyDelay = 5,
     autoSave = true, saveDelay = 120,
+    autoRejoin = true,
     antiAfk = true,
-    fpsBoost = false,
-    espTycoons = false, espRange = 400,
 
+    -- hiring
+    hireWage = 0,
+
+    -- visuals
+    fpsBoost = false,
+    espTycoons = false, espRange = 500,
+
+    -- telemetry
     regTaken = 0, trucksUnloaded = 0, robbersCaught = 0, standsRestocked = 0,
-    hiredStaff = 0, itemsBought = 0, sessionEarn = 0, savesFired = 0,
-    paidFired = 0, peakMoney = 0,
+    hiredStaff = 0, itemsBought = 0, paidFired = 0, savesFired = 0,
+    sessionEarn = 0, peakMoney = 0, lastM = nil,
+    capNotified = false,
+    earnLog = {},
 }
 
 -- ================= HELPERS =================
@@ -105,26 +124,21 @@ local function ctrlRemote(t, name)
     return nil
 end
 
-local function addMoney(amount)
+local function moneyNow()
     local t = myTycoon()
-    if not t then return false end
-    local m = ctrlRemote(t, "Money")
-    if m then
-        safe(function() m:FireServer(amount, moneyCode(amount)) end)
-    end
-    return true
+    local info = t and t:FindFirstChild("Info")
+    local m = info and info:FindFirstChild("Money")
+    return m and m.Value or 0
 end
 
-local function forceSave()
-    local t = myTycoon()
-    if not t then return false end
-    local s = ctrlRemote(t, "Save")
-    if s then
-        safe(function() s:FireServer() end)
-        S.savesFired += 1
-        return true
+local function lotAnchor(t)
+    local info = t:FindFirstChild("Info")
+    local lot = info and info:FindFirstChild("Lot")
+    local v = lot and lot.Value
+    if v and v:IsA("BasePart") then
+        return v
     end
-    return false
+    return nil
 end
 
 local function emptyGames(t)
@@ -144,22 +158,60 @@ local function emptyGames(t)
     return out
 end
 
--- lot anchor: Lot.Value IS the Part (v9 searched children - the bug)
-local function lotAnchor(t)
-    local info = t:FindFirstChild("Info")
-    local lot = info and info:FindFirstChild("Lot")
-    local v = lot and lot.Value
-    if v and v:IsA("BasePart") then
-        return v
+-- ================= CAP-GUARDED MONEY =================
+
+local function addMoney(amount)
+    local t = myTycoon()
+    if not t then return false end
+    if amount > 0 then
+        local current = moneyNow()
+        if current >= SAFE_CEILING then
+            if not S.capNotified then
+                S.capNotified = true
+                notify("Cap Guard", "At $" .. comma(current) .. " - drip paused below the $1B cap", "shield")
+            end
+            return false
+        end
+        if current + amount > CAP - 50e6 then
+            amount = math.max(1000, CAP - 50e6 - current)
+        end
     end
-    return nil
+    local m = ctrlRemote(t, "Money")
+    if m then
+        safe(function() m:FireServer(amount, moneyCode(amount)) end)
+    end
+    return true
 end
 
--- ================= FREE WORKFORCE =================
+local function forceSave()
+    local t = myTycoon()
+    if not t then return false end
+    local s = ctrlRemote(t, "Save")
+    if s then
+        safe(function() s:FireServer() end)
+        S.savesFired += 1
+        return true
+    end
+    return false
+end
 
-local JOB_NAMES = { [2] = "Register", [3] = "Restocker", [4] = "Delivery", [5] = "Security" }
+-- ================= TEAM SYSTEM =================
 
-local function hireFree(job)
+local function teamCounts(t)
+    local counts = { 0, 0, 0, 0, 0, 0 }
+    local emps = t:FindFirstChild("Employees")
+    if emps then
+        for _, e in ipairs(emps:GetChildren()) do
+            local j = e:FindFirstChild("Job")
+            if j and j.Value >= 1 and j.Value <= 5 then
+                counts[j.Value] += 1
+            end
+        end
+    end
+    return counts
+end
+
+local function hireWaged(job, wage)
     local t = myTycoon()
     if not t then return false end
     local template = RS:FindFirstChild("Employee")
@@ -169,7 +221,7 @@ local function hireFree(job)
         newemp:InvokeServer(t, template, {
             Job = job,
             Nam = template.Nam.Value,
-            Cost = 0,
+            Cost = wage,
             Color = template.Appearance.Color.Value,
             Hair = template.Appearance.Hair.Value,
         })
@@ -178,17 +230,31 @@ local function hireFree(job)
     return ok
 end
 
-local function hireFreeMany(job, count)
+local function hireManyWaged(job, count, wage)
     local hired = 0
     for _ = 1, count do
         if not alive() then break end
-        if hireFree(job) then hired += 1 end
+        if hireWaged(job, wage) then hired += 1 end
         task.wait(0.25)
     end
     return hired
 end
 
--- fire one employee (paid leech removal)
+local function buildTeam()
+    local t = myTycoon()
+    if not t then return 0 end
+    local counts = teamCounts(t)
+    local hired = 0
+    for _, entry in ipairs(TEAM_PLAN) do
+        local deficit = entry.count - counts[entry.job]
+        for _ = 1, math.max(deficit, 0) do
+            if hireWaged(entry.job, S.hireWage) then hired += 1 end
+            task.wait(0.3)
+        end
+    end
+    return hired
+end
+
 local function fireEmployee(t, empFolder)
     local fireemp = WS:FindFirstChild("Events") and WS.Events:FindFirstChild("fireemp")
     if not fireemp then return false end
@@ -199,7 +265,6 @@ local function fireEmployee(t, empFolder)
     return ok
 end
 
--- fire every PAID employee (Cost > 0)
 local function fireAllPaid()
     local t = myTycoon()
     if not t then return 0 end
@@ -212,6 +277,19 @@ local function fireAllPaid()
             if fireEmployee(t, e) then fired += 1 end
             task.wait(0.2)
         end
+    end
+    return fired
+end
+
+local function fireEveryone()
+    local t = myTycoon()
+    if not t then return 0 end
+    local emps = t:FindFirstChild("Employees")
+    if not emps then return 0 end
+    local fired = 0
+    for _, e in ipairs(emps:GetChildren()) do
+        if fireEmployee(t, e) then fired += 1 end
+        task.wait(0.2)
     end
     return fired
 end
@@ -253,17 +331,43 @@ local function serveRegister(n)
     if holder then holder:Destroy() end
 end
 
--- ================= ROBBERS (full game sequence) =================
--- UncoverFn reveals + cuffs + sirens (Job=98), CaptureFn pays the
--- bounty AND fades + destroys the body ~7s later. The full sequence
--- leaves NOTHING frozen - v9's CaptureFn-only calls did.
+-- ================= ROBBERS =================
 
 local function captureRobber(folder)
     local ok1 = pcall(function() folder.UncoverFn:Invoke() end)
     task.wait(0.5)
     local ok2 = pcall(function() folder.CaptureFn:Invoke() end)
     if ok1 or ok2 then S.robbersCaught += 1 end
-    return ok1 and ok2
+end
+
+-- ================= MAX TIER =================
+
+local function upgradeToMax()
+    local tiers = 0
+    local t = myTycoon()
+    if not t then return 0 end
+    local up = ctrlRemote(t, "Upgrade")
+    if not up then return 0 end
+    for _ = 1, 30 do
+        if not alive() then break end
+        local ft = myTycoon()
+        if not ft then break end
+        local before = ft.Info:FindFirstChild("TycoonBuilding")
+        before = before and before.Value or 0
+        up:FireServer()
+        task.wait(6)
+        local ft2 = myTycoon()
+        if not ft2 then break end
+        local now = ft2.Info:FindFirstChild("TycoonBuilding")
+        now = now and now.Value or 0
+        if now > before then
+            tiers += now - before
+        else
+            break
+        end
+    end
+    forceSave()
+    return tiers
 end
 
 -- ================= BUY EVERYTHING =================
@@ -300,13 +404,11 @@ local function buyEverything()
             end
         end
     end
-    local up = ctrlRemote(t, "Upgrade")
-    if up then safe(function() up:FireServer() end) end
     S.itemsBought += bought
     return { bought = bought }
 end
 
--- ================= ESP =================
+-- ================= DETAILED ESP =================
 
 local tycoonLabels = {}
 local function clearTycoonEsp()
@@ -314,6 +416,30 @@ local function clearTycoonEsp()
         if l and l.Parent then l.Parent:Destroy() end
     end
     tycoonLabels = {}
+end
+
+local function espTextFor(ty)
+    local info = ty:FindFirstChild("Info")
+    if not info then return nil, false end
+    local owner = info:FindFirstChild("Owner")
+    local money = info:FindFirstChild("Money")
+    local tier = info:FindFirstChild("TycoonBuilding")
+    local games = info:FindFirstChild("Games")
+    local maxGames = info:FindFirstChild("MaxGames")
+    local rating = info:FindFirstChild("Rating")
+    local open = info:FindFirstChild("Open")
+    local emps = ty:FindFirstChild("Employees")
+
+    local isMine = owner and owner.Value == LP.Name
+    local lines = {}
+    lines[1] = (owner and owner.Value or "?") .. (isMine and "  [YOU]" or "")
+    lines[2] = "$" .. comma(money and money.Value or 0)
+    lines[3] = "Tier " .. (tier and tier.Value or "?")
+        .. "  |  Games " .. (games and games.Value or "?") .. "/" .. (maxGames and maxGames.Value or "?")
+    lines[4] = "Rating " .. string.format("%.2f", (rating and rating.Value or 0))
+        .. "  |  Staff " .. (emps and #emps:GetChildren() or 0)
+        .. "  |  " .. ((open and open.Value) and "OPEN" or "CLOSED")
+    return table.concat(lines, "\n"), isMine
 end
 
 -- ================= LIGHTING =================
@@ -344,9 +470,9 @@ end
 local Window = WindUI:CreateWindow({
     Title = "Game Store Tycoon Hub",
     Icon = "store",
-    Author = "v10.0 apex",
+    Author = "v12.0 omega",
     Folder = "GameStoreTycoonHub",
-    Size = UDim2.fromOffset(640, 580),
+    Size = UDim2.fromOffset(650, 590),
     Theme = "Dark",
     Transparent = true,
     ToggleKey = Enum.KeyCode.K,
@@ -373,7 +499,7 @@ local MA = sect(TabMain, "One-Click")
 
 MA:Toggle({
     Title = "GOD MODE",
-    Desc = "Everything + auto-save + auto-fire paid staff + anti-AFK. The store runs itself forever.",
+    Desc = "Everything: 7+3 free team, all automations, cap-guarded money engine, save guard, auto-rejoin, anti-AFK. Survives rejoins.",
     Icon = "rocket",
     Value = false, Flag = "master_god",
     Callback = function(v)
@@ -381,11 +507,18 @@ MA:Toggle({
         S.autoRestock = v
         S.autoDelivery = v
         S.autoRobber = v
-        S.autoStaff = v
+        S.autoTeam = v
         S.autoFirePaid = v
         S.autoSave = v
+        S.autoRejoin = v
         S.antiAfk = v
-        notify("God Mode", v and "Engaged - apex mode" or "Disabled", "rocket")
+        if v then
+            task.spawn(function()
+                local hired = buildTeam()
+                if hired > 0 then notify("Team", "+" .. hired .. " free staff", "users") end
+            end)
+        end
+        notify("God Mode", v and "Engaged - the empire runs itself" or "Disabled", "rocket")
     end,
 })
 
@@ -400,34 +533,59 @@ MB:Slider({ Title = "Restock Delay (s)", Value = { Min = 1, Max = 10, Default = 
     Flag = "restock_delay", Callback = function(v) S.restockDelay = v end })
 MB:Toggle({ Title = "Auto Delivery", Value = false, Flag = "auto_delivery",
     Callback = function(v) S.autoDelivery = v end })
-MB:Toggle({ Title = "Auto Catch Robbers", Desc = "Full capture sequence - reveals, cuffs, bounty, fade-out. No frozen bodies.",
+MB:Toggle({ Title = "Auto Catch Robbers", Desc = "Full capture sequence - no frozen bodies",
     Value = false, Flag = "auto_robber", Callback = function(v) S.autoRobber = v end })
 
--- ------ TAB: STAFF ------
+-- ------ TAB: TEAM ------
 
-local TabStaff = Window:Tab({ Title = "Staff", Icon = "users", IconColor = Color3.fromHex("#a78bfa") })
-local SA = sect(TabStaff, "Free Unlimited Employees")
+local TabStaff = Window:Tab({ Title = "Team", Icon = "users", IconColor = Color3.fromHex("#a78bfa") })
+local SA = sect(TabStaff, "Wage Control")
 
-SA:Paragraph({ Title = "Verified", Desc = "Wages are the Cost YOU send - v10 sends 0. No server cap. Free forever." })
+SA:Slider({
+    Title = "Employee Wage ($/min)",
+    Desc = "0 = free forever. Negative = REVERSE WAGES (experimental - they may pay you). Positive = you pay them.",
+    Value = { Min = -10000, Max = 10000, Default = 0, Step = 250 },
+    Flag = "hire_wage",
+    Callback = function(v) S.hireWage = v end,
+})
 
 SA:Button({
-    Title = "Hire 20 of EVERY Job - FREE",
-    Desc = "80 employees at $0/min",
-    Icon = "crown",
+    Title = "Build Team NOW (7 Reg + 3 Del)",
+    Desc = "Hires exactly what's missing at your wage setting",
+    Icon = "users",
     Callback = function()
         task.spawn(function()
-            notify("Hiring", "80 FREE employees incoming...", "users")
-            local total = 0
-            for job = 2, 5 do
-                total += hireFreeMany(job, 20)
-            end
+            local hired = buildTeam()
             forceSave()
-            notify("Hiring", "Hired " .. total .. "/80 - saved", "users")
+            notify("Team", "Team built (+" .. hired .. ") at " .. comma(S.hireWage) .. "$/min - saved", "users")
         end)
     end,
 })
 
-local SB = sect(TabStaff, "Manual Hire (free)")
+SA:Toggle({ Title = "Auto Team Keeper", Desc = "Maintains the 7+3 team around the clock",
+    Value = false, Flag = "auto_team",
+    Callback = function(v)
+        S.autoTeam = v
+        if v then task.spawn(function() buildTeam() end) end
+    end })
+
+SA:Button({
+    Title = "NEGATIVE WAGE TEAM (experimental)",
+    Desc = "Rebuilds everyone at -1000 $/min - employees may pay YOU. Unproven; fire them if money acts odd.",
+    Icon = "flask-conical",
+    Callback = function()
+        task.spawn(function()
+            fireEveryone()
+            task.wait(1)
+            local h1 = hireManyWaged(2, 7, -1000)
+            local h2 = hireManyWaged(4, 3, -1000)
+            forceSave()
+            notify("Experiment", "Negative team: " .. (h1 + h2) .. " hired at -1000$/min", "flask-conical")
+        end)
+    end,
+})
+
+local SB = sect(TabStaff, "Manual Hire")
 
 local hireJob = 2
 SB:Dropdown({
@@ -441,38 +599,39 @@ SB:Dropdown({
 local hireCountRef = 1
 SB:Slider({ Title = "Count", Value = { Min = 1, Max = 100, Default = 1 },
     Callback = function(v) hireCountRef = v end })
-SB:Button({ Title = "Hire Selected - FREE", Icon = "user-plus", Callback = function()
+SB:Button({ Title = "Hire Selected", Icon = "user-plus", Callback = function()
     task.spawn(function()
-        local n = hireFreeMany(hireJob, hireCountRef)
+        local n = hireManyWaged(hireJob, hireCountRef, S.hireWage)
         forceSave()
-        notify("Hiring", "Hired " .. n .. " at $0/min - saved", "user-plus")
+        notify("Hiring", "Hired " .. n .. " at " .. comma(S.hireWage) .. "$/min", "user-plus")
     end)
 end })
 
-local SC = sect(TabStaff, "Army Keeper + Leech Cleanup")
+local SC = sect(TabStaff, "Cleanup")
 
-SC:Toggle({ Title = "Auto Staff Keeper", Desc = "Re-hires free staff to hold the target", Value = false, Flag = "auto_staff",
-    Callback = function(v) S.autoStaff = v end })
-SC:Slider({ Title = "Staff Target Count", Value = { Min = 5, Max = 200, Default = 30 },
-    Flag = "staff_target", Callback = function(v) S.staffTarget = v end })
-SC:Toggle({ Title = "Auto Fire PAID Staff", Desc = "Removes any employee charging wages (Cost > 0)",
-    Value = false, Flag = "auto_fire_paid",
+SC:Button({ Title = "Fire ALL Paid Staff NOW", Desc = "Every wage-leech - gone",
+    Icon = "user-minus", Callback = function()
+        task.spawn(function()
+            local n = fireAllPaid()
+            forceSave()
+            notify("Cleanup", "Fired " .. n .. " paid - saved", "user-minus")
+        end)
+    end })
+SC:Button({ Title = "Fire EVERYONE (reset team)", Icon = "trash-2", Callback = function()
+    task.spawn(function()
+        local n = fireEveryone()
+        notify("Team", "Fired " .. n, "trash-2")
+    end)
+end })
+SC:Toggle({ Title = "Auto Fire Paid Staff", Value = false, Flag = "auto_fire_paid",
     Callback = function(v)
         S.autoFirePaid = v
         if v then
             task.spawn(function()
                 local n = fireAllPaid()
-                if n > 0 then notify("Cleanup", "Fired " .. n .. " paid leeches", "user-minus") end
+                if n > 0 then notify("Cleanup", "Fired " .. n, "user-minus") end
             end)
         end
-    end })
-SC:Button({ Title = "Fire ALL Paid Staff NOW", Desc = "One click - kills every wage on the books",
-    Icon = "user-minus", Callback = function()
-        task.spawn(function()
-            local n = fireAllPaid()
-            forceSave()
-            notify("Cleanup", "Fired " .. n .. " paid employees - saved", "user-minus")
-        end)
     end })
 
 -- ------ TAB: UPGRADES ------
@@ -481,9 +640,29 @@ local TabUp = Window:Tab({ Title = "Upgrades", Icon = "trending-up", IconColor =
 local UA = sect(TabUp, "Store")
 
 UA:Button({
-    Title = "AUTO UPGRADE ALL",
-    Desc = "Buys every unowned model, ad, register and building - verified signature",
+    Title = "MAX BUILDING TIER",
+    Desc = "One touch to the top tier - instant if already max",
     Icon = "crown",
+    Callback = function()
+        task.spawn(function()
+            notify("Max Tier", "Upgrading...", "crown")
+            local tiers = upgradeToMax()
+            local t = myTycoon()
+            local tier = t and t.Info:FindFirstChild("TycoonBuilding")
+            tier = tier and tier.Value or "?"
+            if tiers > 0 then
+                notify("Max Tier", "Reached tier " .. tier, "crown")
+            else
+                notify("Max Tier", "Already maxed - tier " .. tier, "crown")
+            end
+        end)
+    end,
+})
+
+UA:Button({
+    Title = "AUTO UPGRADE ALL",
+    Desc = "Buys every unowned model, ad, register and building",
+    Icon = "shopping-cart",
     Callback = function()
         task.spawn(function()
             notify("Upgrade All", "Buying everything...", "crown")
@@ -496,25 +675,19 @@ UA:Button({
                 task.wait(0.5)
             end
             forceSave()
-            notify("Upgrade All", "Bought " .. total .. " - store maxed & saved", "crown")
+            notify("Upgrade All", "Bought " .. total .. " items - saved", "crown")
         end)
     end,
 })
-UA:Button({ Title = "Upgrade Building Tier", Icon = "arrow-up-circle", Callback = function()
-    local t = myTycoon()
-    if t then
-        local u = ctrlRemote(t, "Upgrade")
-        if u then safe(function() u:FireServer() end) end
-    end
-end })
-UA:Button({ Title = "Force Save NOW", Desc = "Banks all progress", Icon = "save", Callback = function()
+
+UA:Button({ Title = "Force Save NOW", Icon = "save", Callback = function()
     if forceSave() then notify("Save", "Progress banked", "save") end
 end })
 
 -- ------ TAB: MONEY ------
 
 local TabMoney = Window:Tab({ Title = "Money", Icon = "banknote", IconColor = Color3.fromHex("#4ade80") })
-local MC = sect(TabMoney, "Instant Cash")
+local MC = sect(TabMoney, "Instant Cash (cap-guarded)")
 
 MC:Button({ Title = "+$10,000", Icon = "banknote", Callback = function()
     if addMoney(10000) then notify("Money", "+$10,000", "banknote") end
@@ -525,26 +698,49 @@ end })
 MC:Button({ Title = "+$1,000,000", Icon = "banknote", Callback = function()
     if addMoney(1000000) then notify("Money", "+$1,000,000", "banknote") end
 end })
-MC:Button({ Title = "+$1M and Save", Icon = "save", Callback = function()
-    if addMoney(1000000) then
-        task.wait(0.5)
-        forceSave()
-        notify("Money", "+$1M banked", "save")
-    end
+MC:Button({ Title = "+$10,000,000", Icon = "banknote", Callback = function()
+    if addMoney(10000000) then notify("Money", "+$10,000,000", "banknote") end
 end })
+
+MC:Button({
+    Title = "MONEY CANNON",
+    Desc = "Rapid burst of 20 payments at your drip amount - every shot cap-checked",
+    Icon = "zap",
+    Callback = function()
+        task.spawn(function()
+            notify("Cannon", "Firing...", "zap")
+            local fired = 0
+            for _ = 1, 20 do
+                if not alive() then break end
+                if addMoney(S.moneyAmount) then
+                    fired += 1
+                else
+                    break
+                end
+                task.wait(0.1)
+            end
+            forceSave()
+            notify("Cannon", fired .. " shots landed - saved", "zap")
+        end)
+    end,
+})
 
 local MD = sect(TabMoney, "Auto Money Drip")
 
-MD:Toggle({ Title = "Auto Money Drip", Value = false, Flag = "auto_money",
-    Callback = function(v) S.autoMoney = v end })
+MD:Toggle({ Title = "Auto Money Drip", Desc = "Cap-guarded: pauses at $950M, never lets you hit the $1B reset",
+    Value = false, Flag = "auto_money",
+    Callback = function(v)
+        S.autoMoney = v
+        S.capNotified = false
+    end })
 MD:Slider({ Title = "Amount per tick", Value = { Min = 1000, Max = 10000000, Default = 10000, Step = 1000 },
     Flag = "money_amount", Callback = function(v) S.moneyAmount = v end })
 MD:Slider({ Title = "Delay (s)", Value = { Min = 0.01, Max = 60, Default = 5, Step = 0.01 },
     Flag = "money_delay", Callback = function(v) S.moneyDelay = v end })
 
-local ME = sect(TabMoney, "Auto Save Guard")
+local ME = sect(TabMoney, "Guards")
 
-ME:Toggle({ Title = "Auto Save", Desc = "Banks progress periodically - reverts only cost the tail",
+ME:Toggle({ Title = "Auto Save", Desc = "Banks progress - a reset only costs the tail",
     Value = true, Flag = "auto_save",
     Callback = function(v) S.autoSave = v end })
 ME:Slider({ Title = "Save Interval (s)", Value = { Min = 30, Max = 600, Default = 120 },
@@ -555,25 +751,42 @@ ME:Slider({ Title = "Save Interval (s)", Value = { Min = 30, Max = 600, Default 
 local TabVis = Window:Tab({ Title = "Visuals", Icon = "eye", IconColor = Color3.fromHex("#7dd87d") })
 local VA = sect(TabVis, "World")
 
-VA:Toggle({ Title = "Tycoon ESP", Desc = "Owner + money over every store (fixed: labels adorn the Lot Part directly)",
+VA:Toggle({ Title = "Detailed Tycoon ESP", Desc = "Owner, money, tier, games, rating, staff, open/closed - yours in green",
     Value = false, Flag = "esp_tycoons",
     Callback = function(v) S.espTycoons = v; if not v then clearTycoonEsp() end end })
-VA:Slider({ Title = "ESP Range", Value = { Min = 100, Max = 1000, Default = 400 },
+VA:Slider({ Title = "ESP Range", Value = { Min = 100, Max = 1500, Default = 500 },
     Flag = "esp_range", Callback = function(v) S.espRange = v end })
 
 local VB = sect(TabVis, "Client")
 
-VB:Toggle({ Title = "FPS Boost", Desc = "Shadows + post-effects off (recommended with 90+ staff)",
+VB:Toggle({ Title = "FPS Boost", Desc = "Shadows + post-effects off",
     Value = false, Flag = "gfx_fps",
     Callback = function(v) S.fpsBoost = v; applyLighting() end })
+
+-- ------ TAB: OVERNIGHT ------
+
+local TabNight = Window:Tab({ Title = "Overnight", Icon = "moon", IconColor = Color3.fromHex("#a78bfa") })
+local NA = sect(TabNight, "Unattended Operation")
+
+NA:Paragraph({ Title = "How it works", Desc = "GOD MODE saves its state. If this file is in Real's AutoExec folder, the hub reloads itself on every join - so after an auto-rejoin, the empire resumes automatically." })
+
+NA:Toggle({ Title = "Auto Rejoin on Data Loss", Desc = "If the server dies or you get dropped, rejoin automatically",
+    Value = true, Flag = "auto_rejoin",
+    Callback = function(v) S.autoRejoin = v end })
+
+NA:Toggle({ Title = "Anti-AFK", Desc = "Silent - keeps the connection alive forever",
+    Value = true, Flag = "ut_afk",
+    Callback = function(v) S.antiAfk = v end })
+
+NA:Button({ Title = "Rejoin Server NOW", Icon = "refresh-cw", Callback = function()
+    TS:Teleport(game.PlaceId, LP)
+end })
 
 -- ------ TAB: MISC ------
 
 local TabMisc = Window:Tab({ Title = "Misc", Icon = "ellipsis", IconColor = Color3.fromHex("#94a3b8") })
 local MS = sect(TabMisc, "Utility")
 
-MS:Toggle({ Title = "Anti-AFK", Value = true, Flag = "ut_afk",
-    Callback = function(v) S.antiAfk = v end })
 MS:Button({ Title = "Teleport to My Store", Icon = "map-pin", Callback = function()
     local t = myTycoon()
     if t then
@@ -581,13 +794,11 @@ MS:Button({ Title = "Teleport to My Store", Icon = "map-pin", Callback = functio
         local hrp = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
         if anchor and hrp then
             hrp.CFrame = CFrame.new(anchor.Position + Vector3.new(0, 10, 0))
-            notify("Teleport", "At your store", "map-pin")
         end
     end
 end })
-MS:Button({ Title = "Rejoin Server", Icon = "refresh-cw", Callback = function() TS:Teleport(game.PlaceId, LP) end })
 
-TabMisc:Paragraph({ Title = "Info", Desc = "K - toggle menu\nAll settings persist.\nGOD MODE = the whole empire in one switch." })
+TabMisc:Paragraph({ Title = "Info", Desc = "K - toggle menu\nAll settings persist between sessions and rejoins.\nGOD MODE = the entire empire in one switch." })
 
 -- ================= CORE LOOPS =================
 
@@ -613,10 +824,11 @@ task.spawn(function()
     end
 end)
 
--- delivery + robber + restock + paid-staff cleanup
+-- delivery + robber + restock + team + paid sweep
 task.spawn(function()
     local restockAcc = 0
-    local paidCheck = 0
+    local teamAcc = 0
+    local paidAcc = 0
     while alive() do
         local t = myTycoon()
         if t then
@@ -684,10 +896,18 @@ task.spawn(function()
                 end
             end
 
-            -- paid-staff sweep every ~60s
-            paidCheck += 1
-            if S.autoFirePaid and paidCheck >= 80 then
-                paidCheck = 0
+            teamAcc += 1
+            if S.autoTeam and teamAcc >= 30 then
+                teamAcc = 0
+                local counts = teamCounts(t)
+                if (counts[2] < 7) or (counts[4] < 3) then
+                    task.spawn(buildTeam)
+                end
+            end
+
+            paidAcc += 1
+            if S.autoFirePaid and paidAcc >= 80 then
+                paidAcc = 0
                 fireAllPaid()
             end
         end
@@ -695,29 +915,7 @@ task.spawn(function()
     end
 end)
 
--- staff keeper
-task.spawn(function()
-    local acc = 0
-    while alive() do
-        acc += 1
-        if S.autoStaff and acc >= 20 then
-            acc = 0
-            local t = myTycoon()
-            local emps = t and t:FindFirstChild("Employees")
-            local count = emps and #emps:GetChildren() or 0
-            if t and count < S.staffTarget then
-                local deficit = math.min(S.staffTarget - count, 10)
-                for _ = 1, deficit do
-                    hireFree(2)
-                    task.wait(0.25)
-                end
-            end
-        end
-        task.wait(1)
-    end
-end)
-
--- money drip + auto-save
+-- money drip + auto-save (cap-guarded)
 task.spawn(function()
     local saveAcc = 0
     while alive() do
@@ -733,7 +931,7 @@ task.spawn(function()
     end
 end)
 
--- ESP loop (fixed anchor)
+-- detailed ESP
 task.spawn(function()
     while alive() do
         if S.espTycoons then
@@ -742,31 +940,33 @@ task.spawn(function()
                     and LP.Character.HumanoidRootPart.Position
                 if myPos then
                     for _, ty in ipairs(WS.Tycoons:GetChildren()) do
-                        local info = ty:FindFirstChild("Info")
-                        local anchor = info and lotAnchor(ty)
+                        local anchor = lotAnchor(ty)
                         if anchor and (anchor.Position - myPos).Magnitude <= S.espRange then
                             local label = tycoonLabels[ty]
                             if not label or not label.Parent then
                                 local bg = Instance.new("BillboardGui")
-                                bg.Size = UDim2.new(0, 180, 0, 30)
-                                bg.StudsOffset = Vector3.new(0, 10, 0)
+                                bg.Size = UDim2.new(0, 230, 0, 80)
+                                bg.StudsOffset = Vector3.new(0, 14, 0)
                                 bg.AlwaysOnTop = true
                                 bg.Adornee = anchor
                                 bg.Parent = anchor
                                 local tl = Instance.new("TextLabel")
                                 tl.Size = UDim2.new(1, 0, 1, 0)
                                 tl.BackgroundTransparency = 1
-                                tl.TextColor3 = Color3.fromRGB(120, 220, 120)
                                 tl.TextStrokeTransparency = 0.3
-                                tl.TextSize = 14
+                                tl.TextSize = 13
                                 tl.Font = Enum.Font.GothamBold
+                                tl.TextWrapped = true
                                 tl.Parent = bg
                                 tycoonLabels[ty] = tl
                             end
-                            local money = info:FindFirstChild("Money")
-                            local owner = info:FindFirstChild("Owner")
-                            label.Text = (owner and owner.Value or "?") .. " - $" ..
-                                (money and comma(money.Value) or "?")
+                            local text, isMine = espTextFor(ty)
+                            if text then
+                                label.Text = text
+                                label.TextColor3 = isMine
+                                    and Color3.fromRGB(120, 220, 120)
+                                    or Color3.fromRGB(235, 235, 235)
+                            end
                         end
                     end
                     for ty, l in pairs(tycoonLabels) do
@@ -782,44 +982,65 @@ task.spawn(function()
     end
 end)
 
--- stats (with free/paid breakdown)
+-- stats + earnings rate + cap-reset watchdog (per-second)
 task.spawn(function()
-    local lastM = nil
     while alive() do
         local t = myTycoon()
-        if t and statsPara then
+        if t then
             local info = t:FindFirstChild("Info")
-            if info then
-                local moneyV = info:FindFirstChild("Money")
+            local moneyV = info and info:FindFirstChild("Money")
+            if moneyV then
+                local m = moneyV.Value
+                if S.lastM == nil then S.lastM = m end
+                local d = m - S.lastM
+                if d > 0 then
+                    S.sessionEarn += d
+                    S.earnLog[#S.earnLog + 1] = { t = os.clock(), d = d }
+                end
+                if m > S.peakMoney then S.peakMoney = m end
+
+                -- cap-reset detector: money collapsed to near-zero from a high peak
+                if S.peakMoney > 100e6 and m < 1000 then
+                    S.autoMoney = false
+                    notify("CAP RESET DETECTED", "Money hit the $1B cap and reset. Drip disabled - re-enable below the line.", "shield-off")
+                    S.peakMoney = m
+                end
+                -- reset the notified flag once safely under ceiling
+                if S.capNotified and m < SAFE_CEILING - 100e6 then
+                    S.capNotified = false
+                end
+                S.lastM = m
+
+                -- rolling 60s rate
+                local now = os.clock()
+                while #S.earnLog > 0 and now - S.earnLog[1].t > 60 do table.remove(S.earnLog, 1) end
+                local rate = 0
+                for _, e in ipairs(S.earnLog) do rate += e.d end
+
+                local counts = teamCounts(t)
+                local paid = 0
                 local emps = t:FindFirstChild("Employees")
-                if moneyV then
-                    local freeCount, paidCount = 0, 0
-                    if emps then
-                        for _, e in ipairs(emps:GetChildren()) do
-                            local c = e:FindFirstChild("Cost")
-                            if c and c.Value > 0 then
-                                paidCount += 1
-                            else
-                                freeCount += 1
-                            end
-                        end
+                if emps then
+                    for _, e in ipairs(emps:GetChildren()) do
+                        local c = e:FindFirstChild("Cost")
+                        if c and c.Value > 0 then paid += 1 end
                     end
-                    if lastM == nil then lastM = moneyV.Value end
-                    if moneyV.Value > lastM then
-                        S.sessionEarn += moneyV.Value - lastM
-                    end
-                    if moneyV.Value > S.peakMoney then S.peakMoney = moneyV.Value end
-                    lastM = moneyV.Value
+                end
+                if statsPara then
                     safe(function()
                         statsPara:SetTitle("Live Stats")
                         statsPara:SetDesc(table.concat({
-                            string.format("Money: $%s  (+$%s session, peak $%s)",
-                                comma(moneyV.Value), comma(S.sessionEarn), comma(S.peakMoney)),
-                            string.format("Staff: %d free / %d PAID  |  Games: %d/%d  |  Bldg: %d",
-                                freeCount, paidCount, info.Games.Value, info.MaxGames.Value, info.Building.Value),
-                            string.format("Orders: %d  Trucks: %d  Robbers: %d  Restocks: %d",
+                            string.format("Money: $%s / $950M cap  (+$%s session)",
+                                comma(m), comma(S.sessionEarn)),
+                            string.format("Rate: $%s/min  |  Peak: $%s",
+                                comma(rate), comma(S.peakMoney)),
+                            string.format("Reg %d/7  Del %d/3  Paid %d  |  Tier %s  Games %d/%d",
+                                counts[2], counts[4], paid,
+                                tostring(info:FindFirstChild("TycoonBuilding") and info.TycoonBuilding.Value or "?"),
+                                info.Games.Value, info.MaxGames.Value),
+                            string.format("Orders %d  Trucks %d  Robbers %d  Restocks %d",
                                 S.regTaken, S.trucksUnloaded, S.robbersCaught, S.standsRestocked),
-                            string.format("Hired: %d  Fired paid: %d  Bought: %d  Saves: %d",
+                            string.format("Hired %d  Fired %d  Bought %d  Saves %d",
                                 S.hiredStaff, S.paidFired, S.itemsBought, S.savesFired),
                         }, "\n"))
                     end)
@@ -827,6 +1048,26 @@ task.spawn(function()
             end
         end
         task.wait(1)
+    end
+end)
+
+-- OVERNIGHT WATCHDOG: data-loss rejoin (30s tick)
+task.spawn(function()
+    local lossStreak = 0
+    while alive() do
+        local t = myTycoon()
+        if t then
+            lossStreak = 0
+        else
+            lossStreak += 1
+            if S.autoRejoin and lossStreak >= 3 then
+                notify("Overnight", "Data loss - rejoining server...", "refresh-cw")
+                task.wait(2)
+                TS:Teleport(game.PlaceId, LP)
+                lossStreak = 0
+            end
+        end
+        task.wait(30)
     end
 end)
 
@@ -844,5 +1085,5 @@ if typeof(STATE) == "table" and STATE.onCleanup then
     end)
 end
 
-notify("Game Store Tycoon Hub", "v10.0 apex loaded - press K", "store")
-print("[GST Hub v10.0] Loaded")
+notify("Game Store Tycoon Hub", "v12.0 omega loaded - press K", "store")
+print("[GST Hub v12.0] Loaded")
