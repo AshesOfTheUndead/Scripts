@@ -537,7 +537,7 @@ local MD = sect(TabMoney, "Auto Money Drip")
 
 MD:Toggle({ Title = "Auto Money Drip", Value = false, Flag = "auto_money",
     Callback = function(v) S.autoMoney = v end })
-MD:Slider({ Title = "Amount per tick", Value = { Min = 1000, Max = 1000000, Default = 10000, Step = 1000 },
+MD:Slider({ Title = "Amount per tick", Value = { Min = 1000, Max = 10000000, Default = 10000, Step = 1000 },
     Flag = "money_amount", Callback = function(v) S.moneyAmount = v end })
 MD:Slider({ Title = "Delay (s)", Value = { Min = 0.01, Max = 60, Default = 5, Step = 0.01 },
     Flag = "money_delay", Callback = function(v) S.moneyDelay = v end })
