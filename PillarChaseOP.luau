@@ -87,8 +87,8 @@ local DEFAULTS = {
 	alertDist = 150,
 	shardEsp = true,
 	shardColor = { 90, 240, 255 },
-	autoCollect = false,
-	collectDelay = 0.1,
+	autoCollect = true,
+	collectDelay = 0.05,
 	collectHeight = 2,
 	-- which ObjectiveInteract* group the auto-collector works on: "All", or a
 	-- group's own folder name (e.g. "ObjectiveInteract2").  Doing one task at a
@@ -100,12 +100,14 @@ local DEFAULTS = {
 	fullbright = false,
 	noFog = false,
 	noclip = false,
+	voidRescue = true,
 	speedMult = 1,
 	shiftlock = false,
 	taskSafety = true,
 	taskSafetyDist = 40,
 	instantPrompt = true,
 	hitboxMult = 1,
+	skinSpoof = true,
 	cameraFov = 70,
 	exitEsp = true,
 	exitColor = { 255, 140, 40 },
@@ -144,6 +146,12 @@ end
 
 local CONFIG_FILE = "pillar-chase-hub.json"
 
+-- Toggles that must NOT be restored from disk.  The auto-farm is meant to be on
+-- out of the box; a stale saved value (from a session where it was toggled off,
+-- or a config written by an older build) would otherwise silently ship the hub
+-- with the farm disabled.  The code default is the single source of truth here.
+local NO_PERSIST = { autoCollect = true }
+
 local function deepCopy(t)
 	local out = {}
 	for k, v in pairs(t) do
@@ -181,7 +189,13 @@ local function saveConfig()
 			end
 			return "nil"
 		end
-		writefile(CONFIG_FILE, "return " .. ser(STATE))
+		local persist = {}
+		for k, v in pairs(STATE) do
+			if not NO_PERSIST[k] then
+				persist[k] = v
+			end
+		end
+		writefile(CONFIG_FILE, "return " .. ser(persist))
 	end)
 end
 
@@ -202,7 +216,9 @@ local function loadConfig()
 			return
 		end
 		for k, v in pairs(saved) do
-			if type(v) == "table" and type(STATE[k]) == "table" then
+			if NO_PERSIST[k] then
+				-- skip: keep the code default for this key
+			elseif type(v) == "table" and type(STATE[k]) == "table" then
 				for k2, v2 in pairs(v) do
 					-- heal old configs where numeric keys were saved as strings
 					local key = k2
@@ -520,7 +536,7 @@ end
 -- window
 -- ==========================================================================
 
-local TITLE = "PILLAR CHASE  ·  ROLE HUB"
+local TITLE = "REZURXHUB"
 
 gui = new("ScreenGui", {
 	Name = "PillarChaseHub",
@@ -595,14 +611,37 @@ local logo = new("Frame", {
 	ZIndex = 6,
 }, topbar)
 corner(logo, 6)
-new("TextLabel", {
+-- hub mark: a centre node, a ring, and three spokes fanning out
+for _, rot in ipairs({ 0, 60, 120 }) do
+	new("Frame", {
+		Name = "Spoke",
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromOffset(15, 1),
+		Rotation = rot,
+		BackgroundColor3 = THEME.bg,
+		BorderSizePixel = 0,
+		ZIndex = 7,
+	}, logo)
+end
+local logoRing = new("Frame", {
+	Name = "Ring",
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.fromScale(0.5, 0.5),
+	Size = UDim2.fromOffset(9, 9),
 	BackgroundTransparency = 1,
-	Size = UDim2.fromScale(1, 1),
-	FontFace = FONT_BOLD,
-	Text = "❯",
-	TextSize = 15,
-	TextColor3 = THEME.bg,
-	ZIndex = 7,
+	ZIndex = 8,
+}, logo)
+corner(logoRing, 20)
+stroke(logoRing, THEME.bg, 2, 0)
+new("Frame", {
+	Name = "Node",
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.fromScale(0.5, 0.5),
+	Size = UDim2.fromOffset(3, 3),
+	BackgroundColor3 = THEME.bg,
+	BorderSizePixel = 0,
+	ZIndex = 9,
 }, logo)
 
 local Title = new("TextLabel", {
@@ -796,7 +835,7 @@ bannerMap = new("TextLabel", {
 	ZIndex = 3,
 }, banner)
 
-local NAV_LABEL = { Roles = "Roles", Visuals = "Visuals", HUD = "HUD", Tasks = "Tasks", Teleport = "Teleport", Extras = "Extras", Info = "Info" }
+local NAV_LABEL = { Roles = "Players", Visuals = "Style", HUD = "Overlay", Tasks = "Tasks", Teleport = "Teleport", Extras = "Tools", Info = "Info" }
 local nav = {}
 local currentTab = nil
 
@@ -2060,7 +2099,7 @@ infoRow(tk5, 2, "you're in the lobby, or you died and are now")
 infoRow(tk5, 3, "spectating, nothing runs - status shows it.")
 infoRow(tk5, 4, "Step 2: objective ESP marks every live task")
 infoRow(tk5, 5, "object (shards, snow, trash, valves, keypads).")
-infoRow(tk5, 6, "'Auto tasks' (OFF by default) does the real")
+infoRow(tk5, 6, "'Auto tasks' (ON by default) does the real")
 infoRow(tk5, 7, "interaction, not a fake poke: it walks you onto")
 infoRow(tk5, 8, "touch shards, fires live prompts, and on the")
 infoRow(tk5, 9, "bone/firepit task grabs each bone and carries it")
@@ -2236,6 +2275,19 @@ infoRow(x8, 2, "Enlarges every survivor's hitbox while you are")
 infoRow(x8, 3, "the Monster. 1.0x is off and restores the game's")
 infoRow(x8, 4, "own sizes; it also resets when you are not the")
 infoRow(x8, 5, "Monster or the round ends.")
+
+section(extrasPage, "skins (cosmetic)", 9)
+local x9 = card(extrasPage, 9)
+toggleRow(x9, 1, "Vapor tier spoof (ON)", function()
+	return STATE.skinSpoof
+end, function(v)
+	STATE.skinSpoof = v
+end)
+infoRow(x9, 2, "Makes the lobby show every Vapor tier as owned")
+infoRow(x9, 3, "and tier IV as equipped. This only changes your")
+infoRow(x9, 4, "own client's copy - the game's in-round monster")
+infoRow(x9, 5, "is still chosen by the server, and everything")
+infoRow(x9, 6, "resets on rejoin. Purely visual, nothing earned.")
 
 section(extrasPage, "hotkeys", 5)
 local x4 = card(extrasPage, 5)
@@ -2964,13 +3016,26 @@ local function shovelTool(char)
 	if not inv then
 		return nil
 	end
+	local fallback
 	for _, c in ipairs(inv:GetChildren()) do
 		local stuff = c:FindFirstChild("ItemStuff")
 		if stuff and stuff:FindFirstChild("Equipped") then
-			return c
+			local nm = string.lower(c.Name)
+			local handle = c:FindFirstChild("Handle")
+			-- the shovel is what actually authorises a dig; match it by name or by
+			-- its Dig sound rather than grabbing whatever tool happens to be first.
+			if string.find(nm, "shovel", 1, true) or string.find(nm, "snow", 1, true) then
+				return c
+			end
+			if handle and handle:FindFirstChild("Dig") then
+				return c
+			end
+			if not fallback then
+				fallback = c
+			end
 		end
 	end
-	return nil
+	return fallback
 end
 
 local function equipTool(char, tool)
@@ -3265,14 +3330,252 @@ local function roundInfo()
 	return true, "In round.", mapObjectName(map)
 end
 
+-- ---------------------------------------------------------------------------
+-- task completion + teardown
+--
+-- Every task the game runs carries its own progress counter on the model: a
+-- LockLeft NumberValue (snow, generators, matrix, valve) or a holder's Required
+-- NumberValue (power cells).  Reading that counter is how the collector tells a
+-- FINISHED task from a live one -- without it a cleared task that stays in the
+-- world (a maxed power matrix, a spent vent, a repaired generator) keeps getting
+-- fired at forever, which is what made the collector look like it "spams every
+-- task".
+-- ---------------------------------------------------------------------------
+local TASK = {}
+
+TASK.counter = function(model)
+	local lock, req
+	for _, d in ipairs(model:GetDescendants()) do
+		if d:IsA("NumberValue") then
+			if d.Name == "LockLeft" then
+				lock = d
+			elseif d.Name == "Required" then
+				req = d
+			end
+		end
+	end
+	return lock, req
+end
+
+-- Some LockLeft counters count UP to Max (snow, generators, matrix, valve, note
+-- pages) and some count DOWN: the blood drain has no Max and the Slimey Dungeon
+-- chest starts AT its Max of 23 and falls to 0.  Reading the direction is what
+-- stops a fresh chest (LockLeft == Max) being mistaken for a finished one.
+TASK.countsDown = function(model, lock)
+	local max = lock and lock:GetAttribute("Max")
+	if not max then
+		return true
+	end
+	for _, d in ipairs(model:GetDescendants()) do
+		if d:IsA("ProximityPrompt") and string.find(string.lower(tostring(d.ActionText)), "lockpick", 1, true) then
+			return true
+		end
+	end
+	return false
+end
+
+-- Slimey Dungeon chest: a Part "Lock" carrying the "Lockpick chest" prompt, a
+-- "Pickup treasure" prompt, and a LockLeft that starts at its Max (23) and
+-- counts down to 0.  Returns lock, lockPrompt, pickupPrompt.
+TASK.chest = function(model)
+	local lock
+	for _, d in ipairs(model:GetDescendants()) do
+		if d:IsA("NumberValue") and d.Name == "LockLeft" then
+			lock = d
+			break
+		end
+	end
+	if not lock then
+		return nil
+	end
+	local lockP, pickP
+	for _, d in ipairs(model:GetDescendants()) do
+		if d:IsA("ProximityPrompt") then
+			local at = string.lower(tostring(d.ActionText))
+			if string.find(at, "lockpick", 1, true) then
+				lockP = d
+			elseif string.find(at, "pickup", 1, true) then
+				pickP = d
+			end
+		end
+	end
+	if not (lockP or pickP) then
+		return nil
+	end
+	return lock, lockP, pickP
+end
+
+TASK.done = function(model)
+	local lock, req = TASK.counter(model)
+	if lock then
+		local max = lock:GetAttribute("Max")
+		if TASK.countsDown(model, lock) then
+			if lock.Value <= 0 then
+				-- a picked chest is not finished until its treasure is taken
+				local _, _, pickP = TASK.chest(model)
+				if not (pickP and pickP.Enabled) then
+					return true
+				end
+			end
+		elseif max and lock.Value >= max then
+			return true
+		end
+	end
+	if req then
+		local max = req:GetAttribute("Max")
+		if max and req.Value >= max then
+			return true
+		end
+	end
+	return false
+end
+
+-- The per-task WorkTask script (blood drain, power matrix, valve, generator)
+-- keeps a Prompt ObjectValue pointing at the model's own prompt and a RemoveMe
+-- RemoteEvent.  RemoveMe is the game's own teardown -- exactly what pressing E
+-- does -- so firing it always closes the task GUI and clears any full-screen
+-- effect it had applied.
+TASK.workTasks = function(map)
+	local list = {}
+	local so = map and map:FindFirstChild("SetupObjectives", true)
+	if not so then
+		return list
+	end
+	for _, d in ipairs(so:GetDescendants()) do
+		if d:FindFirstChild("Prompt") and d:FindFirstChild("RemoveMe") then
+			list[#list + 1] = d
+		end
+	end
+	return list
+end
+
+TASK.forModel = function(map, model)
+	for _, wt in ipairs(TASK.workTasks(map)) do
+		local pv = wt:FindFirstChild("Prompt")
+		local p = pv and pv.Value
+		if p and p.Parent and (p.Parent == model or p.Parent.Parent == model) then
+			return wt
+		end
+	end
+	return nil
+end
+
+TASK.close = function(map, model)
+	local wt = TASK.forModel(map, model)
+	local ok = false
+	if wt then
+		pcall(function()
+			wt.RemoveMe:FireServer()
+		end)
+		ok = true
+	end
+	-- the valve/turn task grabs the camera (CameraType = Scriptable) and only
+	-- hands it back inside its own ExitTask.  We tear the task down with
+	-- RemoveMe instead, so restore the camera here or it can stay stuck at a
+	-- single angle after a valve/generator attempt.
+	pcall(function()
+		local cam = Workspace.CurrentCamera
+		if cam and cam.CameraType == Enum.CameraType.Scriptable then
+			cam.CameraType = Enum.CameraType.Custom
+			local char = LP.Character
+			local hum = char and char:FindFirstChildOfClass("Humanoid")
+			if hum then
+				cam.CameraSubject = hum
+			end
+		end
+	end)
+	return ok
+end
+
+-- shut-off-valve task (Haunted Sewers "TurnTask"): the player opens the task and
+-- drags the valve round; each notch of turn adds to the prompt's own LockLeft
+-- and, at Max, the WorkTask fires its AddStuff and shuts itself down.  The
+-- collector opens the task and fills that counter so the game's own completion
+-- runs, then dismisses the GUI either way.
+TASK.valve = function(model, map)
+	local valve = model:FindFirstChild("Valve", true)
+	if not valve then
+		return nil
+	end
+	local prompt
+	for _, d in ipairs(valve:GetChildren()) do
+		if d:IsA("ProximityPrompt") and d.Name == "ObjectivePrompt" then
+			prompt = d
+			break
+		end
+	end
+	if not prompt then
+		return nil
+	end
+	if not TASK.forModel(map, model) then
+		return nil
+	end
+	return prompt, prompt:FindFirstChild("LockLeft")
+end
+
+-- Hallow Ridge snow pile: the Twigs folder holds one branch per prompt ("to
+-- remove branch"), and the pile only lets you shovel once every branch is gone.
+TASK.snowBranch = function(model)
+	local tw = model:FindFirstChild("Twigs")
+	if not tw then
+		return nil
+	end
+	-- do NOT require Enabled: the game leaves branch prompts disabled until the
+	-- player is close, and sweeping only enabled ones made the pile look clear
+	-- when it was not.  The driver enables the prompt itself before firing.
+	for _, d in ipairs(tw:GetDescendants()) do
+		if d:IsA("ProximityPrompt") then
+			return d
+		end
+	end
+	return nil
+end
+
+-- power matrix (Slime PadTask): a folder of 9 key parts, each with a
+-- ClickDetector.  The task lights the next key bright green; pressing that key
+-- is what a real click sends, so the hub presses the lit key's ClickDetector
+-- rather than poking the completion remote (which the client ignores until the
+-- key code is actually entered).
+TASK.matrixKeys = function(model)
+	local keys = model:FindFirstChild("Keys", true)
+	if not keys then
+		return nil
+	end
+	local list = {}
+	for _, k in ipairs(keys:GetChildren()) do
+		local cd = k:FindFirstChildOfClass("ClickDetector")
+		if cd then
+			list[#list + 1] = { part = k, cd = cd }
+		end
+	end
+	if #list == 0 then
+		return nil
+	end
+	return list
+end
+
 -- available = touchable root part (shards) or a live interaction prompt
--- (valves, generators, snow piles, trash).
+-- (valves, generators, snow piles, trash).  A task whose own counter is full is
+-- never available, whatever its prompt still says.
 local function isObjectiveAvailable(model)
+	if TASK.done(model) then
+		return false
+	end
 	local hrp = model:FindFirstChild("HumanoidRootPart")
 	if hrp and isShardAvailable(hrp) then
 		return true
 	end
-	return hasEnabledPrompt(model) ~= nil
+	if hasEnabledPrompt(model) then
+		return true
+	end
+	-- snow piles gate their ObjectivePrompt behind equipping the shovel (the game
+	-- disables it again the moment the shovel is put away), so a pile whose
+	-- prompt is currently disabled would otherwise look unavailable and get
+	-- skipped forever.  The pile is a real, unfinished task regardless.
+	if snowPileParts(model) then
+		return true
+	end
+	return false
 end
 
 -- ---------------------------------------------------------------------------
@@ -3321,7 +3624,7 @@ end
 -- press is lost.
 local function fireCadence(model)
 	if STATE.instantPrompt then
-		return 0.06
+		return 0.04
 	end
 	local hold = 0
 	for _, d in ipairs(model:GetDescendants()) do
@@ -3484,11 +3787,19 @@ local function taskRank(model, map)
 	if generatorParts(model) then
 		return 3
 	end
-	local dd, fb = boneDragParts(model, map)
-	if dd and fb then
+	if TASK.valve(model, map) then
+		return 3
+	end
+	-- a scripted minigame (power matrix / blood drain): completable through the
+	-- WorkTask's own AddStuff, so it beats a plain prompt object.
+	if TASK.forModel(map, model) then
 		return 4
 	end
-	return 5
+	local dd, fb = boneDragParts(model, map)
+	if dd and fb then
+		return 5
+	end
+	return 6
 end
 
 local function findNearestObjective(origin, force, skip)
@@ -4072,13 +4383,15 @@ local function autoCollectTick(now)
 				AC.gearTarget = gear
 				AC.gearTries = 0
 			end
-			if now - AC.lastFire >= 0.6 then
+			if now - AC.lastFire >= 0.2 then
 				AC.lastFire = now
 				AC.gearTries = AC.gearTries + 1
+				-- a pickup prompt still needs its own hold -- firing it with a
+				-- zero hold is refused and the gear never enters the inventory.
 				pcall(function()
-					fireproximityprompt(gprom, STATE.instantPrompt and 0 or gprom.HoldDuration)
+					fireproximityprompt(gprom, math.max(gprom.HoldDuration, 0.05))
 				end)
-				if AC.gearTries >= 6 then
+				if AC.gearTries >= 5 and invGearCount(char) == 0 then
 					-- pickup is not landing: stop trying and go straight at the
 					-- generators with prompts only
 					AC.gearDisabled = true
@@ -4092,7 +4405,11 @@ local function autoCollectTick(now)
 	if AC.target then
 		local t = AC.target
 		if not t.Parent or not isObjectiveAvailable(t) then
-			-- cleared (or gone): brief pause, then find the next one
+			-- cleared (or gone): brief pause, then find the next one.  If we had
+			-- a task GUI open on it, dismiss it so no screen effect is left on.
+			if AC.genOpened or AC.valveOpened or AC.mgOpened then
+				TASK.close(map, t)
+			end
 			AC.target = nil
 			AC.skip[t] = nil
 			AC.nextAt = now + STATE.collectDelay
@@ -4106,6 +4423,9 @@ local function autoCollectTick(now)
 		-- what stops us pulling the same lever over and over).
 		local v0 = objectiveValueFor(t)
 		if v0 and AC.value0 and v0 > AC.value0 then
+			if AC.genOpened or AC.valveOpened or AC.mgOpened then
+				TASK.close(map, t)
+			end
 			AC.skip[t] = now + 60
 			AC.target = nil
 			AC.nextAt = now
@@ -4134,7 +4454,19 @@ local function autoCollectTick(now)
 		if gprom then
 			local gmax = (glock and glock:GetAttribute("Max")) or 5
 			if glock and glock.Value >= gmax then
+				TASK.close(map, t)
 				AC.skip[t] = now + 60
+				AC.target = nil
+				AC.nextAt = now
+				return
+			end
+			-- no gear in hand: never open the repair UI (it freezes you).  Drop
+			-- the target so the tick goes and fetches one instead.
+			if invGearCount(char) == 0 then
+				if AC.genOpened then
+					TASK.close(map, t)
+					AC.genOpened = false
+				end
 				AC.target = nil
 				AC.nextAt = now
 				return
@@ -4145,34 +4477,36 @@ local function autoCollectTick(now)
 					char:PivotTo(CFrame.new(gpos + Vector3.new(0, STATE.collectHeight, 0)))
 				end)
 			end
-			if now - AC.lastFire >= 0.5 then
+			if not AC.genOpened then
+				AC.genOpened = true
+				pcall(function()
+					fireproximityprompt(gprom, STATE.instantPrompt and 0 or gprom.HoldDuration)
+				end)
+				return
+			end
+			if now - AC.lastFire >= 0.12 then
 				AC.lastFire = now
-				if not AC.genOpened then
-					AC.genOpened = true
+				if not AC.addGear then
+					local wg = mapNow()
+					wg = wg and wg:FindFirstChild("WorkGear", true)
+					AC.addGear = wg and wg:FindFirstChild("AddGear") or nil
+				end
+				if AC.addGear then
 					pcall(function()
-						fireproximityprompt(gprom, STATE.instantPrompt and 0 or gprom.HoldDuration)
+						AC.addGear:FireServer()
 					end)
-				else
-					if not AC.addGear then
-						local mm = mapNow()
-						local wg = mm and mm:FindFirstChild("WorkGear", true)
-						AC.addGear = wg and wg:FindFirstChild("AddGear") or nil
-					end
-					if AC.addGear and invGearCount(char) > 0 then
-						pcall(function()
-							AC.addGear:FireServer()
-						end)
-					else
-						pcall(function()
-							fireproximityprompt(gprom, STATE.instantPrompt and 0 or gprom.HoldDuration)
-						end)
-					end
 				end
 			end
-			if now - AC.started > 15 then
-				AC.skip[t] = now + 20
+			if glock and gmax and glock.Value >= gmax then
+				TASK.close(map, t)
+				AC.skip[t] = now + 60
 				AC.target = nil
 				AC.nextAt = now
+			elseif now - AC.started > 12 then
+				TASK.close(map, t)
+				AC.skip[t] = now + 20
+				AC.target = nil
+				AC.nextAt = now + STATE.collectDelay
 			end
 			return
 		end
@@ -4186,7 +4520,7 @@ local function autoCollectTick(now)
 					char:PivotTo(CFrame.new(vpos + Vector3.new(0, STATE.collectHeight, 0)))
 				end)
 			end
-			if now - AC.lastFire >= 0.3 then
+			if now - AC.lastFire >= 0.12 then
 				AC.lastFire = now
 				if not lever.Enabled then
 					lever.Enabled = true
@@ -4200,6 +4534,213 @@ local function autoCollectTick(now)
 				AC.skip[t] = now + 20
 				AC.target = nil
 				AC.nextAt = now
+			end
+			return
+		end
+		-- shut-off valve: open the task once, then drive its own counter to Max
+		-- so the game's completion (AddStuff + GUI teardown) runs.  RemoveMe is
+		-- fired on every exit so the task screen never sticks.
+		local vprompt, vlock = TASK.valve(t, map)
+		if vprompt then
+			local vpos = objectivePosition(t)
+			if vpos then
+				pcall(function()
+					char:PivotTo(CFrame.new(vpos + Vector3.new(0, STATE.collectHeight, 0)))
+				end)
+			end
+			local vmax = vlock and vlock:GetAttribute("Max")
+			if vlock and vmax and vlock.Value >= vmax then
+				TASK.close(map, t)
+				AC.skip[t] = now + 60
+				AC.target = nil
+				AC.nextAt = now
+				return
+			end
+			if not AC.valveOpened then
+				AC.valveOpened = true
+				AC.valveTries = 0
+				AC.valveAt = now
+				pcall(function()
+					if not vprompt.Enabled then
+						vprompt.Enabled = true
+					end
+					fireproximityprompt(vprompt, STATE.instantPrompt and 0 or vprompt.HoldDuration)
+				end)
+				return
+			end
+			-- the task GUI is up: run the game's own completion by filling the
+			-- counter; the WorkTask then fires AddStuff and closes itself.
+			if vlock and vmax and now - AC.valveAt >= 0.4 then
+				AC.valveTries = (AC.valveTries or 0) + 1
+				pcall(function()
+					vlock.Value = vmax
+				end)
+				local v0 = objectiveValueFor(t)
+				if v0 and AC.value0 and v0 > AC.value0 then
+					TASK.close(map, t)
+					AC.skip[t] = now + 60
+					AC.target = nil
+					AC.nextAt = now
+					return
+				end
+				if AC.valveTries >= 3 then
+					local wt = TASK.forModel(map, t)
+					local add = wt and wt:FindFirstChild("AddStuff")
+					if add then
+						pcall(function()
+							add:FireServer()
+						end)
+					end
+				end
+				if AC.valveTries >= 6 or now - AC.valveAt > 4 then
+					TASK.close(map, t)
+					AC.skip[t] = now + 20
+					AC.target = nil
+					AC.nextAt = now + STATE.collectDelay
+				end
+			end
+			return
+		end
+		-- Slimey Dungeon / Rusted Stronghold chest.  Lockpicking is a ring/zone
+		-- QTE whose client script only runs once the SERVER assigns its
+		-- CurrentTask; firing the prompt or AddStuff from the client does not
+		-- start it (verified live -- LockLeft never moves).  So don't waste
+		-- round time trying: only take the treasure out of a chest someone
+		-- else already picked (LockLeft <= 0), and skip untouched chests fast.
+		local clock, _, pickP = TASK.chest(t)
+		if clock then
+			if clock.Value <= 0 and pickP and pickP.Enabled then
+				local cpos = objectivePosition(t)
+				if cpos then
+					pcall(function()
+						char:PivotTo(CFrame.new(cpos + Vector3.new(0, STATE.collectHeight, 0)))
+					end)
+				end
+				pcall(function()
+					fireproximityprompt(pickP, STATE.instantPrompt and 0 or math.max(pickP.HoldDuration, 0.05))
+				end)
+				AC.skip[t] = now + 30
+			else
+				-- can't pick it ourselves: skip fast so the collector keeps moving
+				AC.skip[t] = now + 20
+			end
+			AC.target = nil
+			AC.nextAt = now
+			return
+		end
+		-- scripted minigame.  Two shapes share this WorkTask:
+		--   * power matrix (LockLeft HAS a Max, counts UP): the game lights the
+		--     next key bright green; only a real click (the key's own
+		--     ClickDetector) advances it, so press the lit key.
+		--   * blood drain (LockLeft has NO Max, counts DOWN): completion is
+		--     client-driven -- its Changed handler fires AddStuff and bumps the
+		--     objective the instant the counter hits zero -- so drive it to zero.
+		-- Either way the task GUI is only ever dismissed through the game's own
+		-- RemoveMe, so no full-screen effect is left behind.
+		local mwt = TASK.forModel(map, t)
+		if mwt then
+			local mlock = TASK.counter(t)
+			local mmax = mlock and mlock:GetAttribute("Max")
+			local mpos = objectivePosition(t)
+			if mpos then
+				pcall(function()
+					char:PivotTo(CFrame.new(mpos + Vector3.new(0, STATE.collectHeight, 0)))
+				end)
+			end
+			if not AC.mgOpened then
+				AC.mgOpened = true
+				AC.mgTries = 0
+				AC.mgAt = now
+				AC.mgStart = now
+				local mprompt = hasEnabledPrompt(t)
+				if mprompt then
+					pcall(function()
+						if not mprompt.Enabled then
+							mprompt.Enabled = true
+						end
+						fireproximityprompt(mprompt, STATE.instantPrompt and 0 or mprompt.HoldDuration)
+					end)
+				end
+				return
+			end
+			local v0 = objectiveValueFor(t)
+			if v0 and AC.value0 and v0 > AC.value0 then
+				TASK.close(map, t)
+				AC.skip[t] = now + 60
+				AC.target = nil
+				AC.nextAt = now
+				return
+			end
+			if mlock and mmax and mlock.Value >= mmax then
+				TASK.close(map, t)
+				AC.skip[t] = now + 60
+				AC.target = nil
+				AC.nextAt = now
+				return
+			end
+			-- blood drain: push the countdown to zero and let the game finish it
+			if mlock and not mmax then
+				if mlock.Value > 0 then
+					pcall(function()
+						mlock.Value = 0
+					end)
+				end
+				if now - AC.mgAt >= 0.12 then
+					AC.mgAt = now
+					AC.mgTries = (AC.mgTries or 0) + 1
+					if AC.mgTries >= 8 or now - AC.mgStart > 8 then
+						TASK.close(map, t)
+						AC.skip[t] = now + 20
+						AC.target = nil
+						AC.nextAt = now + STATE.collectDelay
+					end
+				end
+				return
+			end
+			-- power matrix: press whichever key is lit bright green
+			local keys = TASK.matrixKeys(t)
+			if keys then
+				if now - AC.mgAt >= 0.06 then
+					AC.mgAt = now
+					AC.mgTries = (AC.mgTries or 0) + 1
+					local green = Color3.fromRGB(25, 255, 25)
+					local lit
+					for _, k in ipairs(keys) do
+						if k.part.Color == green then
+							lit = k
+							break
+						end
+					end
+					if lit then
+						pcall(function()
+							fireclickdetector(lit.cd)
+						end)
+					end
+					if AC.mgTries >= 40 or now - AC.mgStart > 14 then
+						TASK.close(map, t)
+						AC.skip[t] = now + 20
+						AC.target = nil
+						AC.nextAt = now + STATE.collectDelay
+					end
+				end
+				return
+			end
+			-- fallback: no key parts found -- poke the completion remote briefly
+			if now - AC.mgAt >= 0.08 then
+				AC.mgAt = now
+				AC.mgTries = (AC.mgTries or 0) + 1
+				local add = mwt:FindFirstChild("AddStuff")
+				if add then
+					pcall(function()
+						add:FireServer()
+					end)
+				end
+				if AC.mgTries >= 12 or now - AC.mgStart > 8 then
+					TASK.close(map, t)
+					AC.skip[t] = now + 20
+					AC.target = nil
+					AC.nextAt = now + STATE.collectDelay
+				end
 			end
 			return
 		end
@@ -4225,15 +4766,37 @@ local function autoCollectTick(now)
 				AC.nextAt = now
 				return
 			end
+			-- branches first: the pile will not let you shovel until every Twig
+			-- is picked up, and each pickup is its own prompt.  Pull the next
+			-- live branch on a relaxed cadence so its pickup animation can land
+			-- -- firing them in a burst just loses the presses.
+			local branch = TASK.snowBranch(t)
+			if branch then
+				if now - AC.lastFire >= 0.45 then
+					AC.lastFire = now
+					pcall(function()
+						if not branch.Enabled then
+							branch.Enabled = true
+						end
+						fireproximityprompt(branch, math.max(branch.HoldDuration, 0.1) + 0.1)
+					end)
+				end
+				if now - AC.started > 25 then
+					AC.skip[t] = now + 15
+					AC.target = nil
+					AC.nextAt = now + STATE.collectDelay
+				end
+				return
+			end
 			local tool = shovelTool(char)
 			if tool then
 				equipTool(char, tool)
 			end
 			local dig = slock and snowDigRemote(map)
 			local direct = dig ~= nil and AC.snowMode ~= "prompt"
-			-- direct digs have nothing to wait for; the prompt route still has
-			-- to leave room for the game's own 0.75s swing or the press is lost.
-			local cadence = direct and 0.12 or 0.85
+			-- direct digs are quick but still leave the game room to register
+			-- each one; the prompt route needs the whole 0.75s swing.
+			local cadence = direct and 0.12 or 0.5
 			if now - AC.lastFire >= cadence then
 				AC.lastFire = now
 				if direct then
@@ -4299,7 +4862,7 @@ local function autoCollectTick(now)
 					carry.stage = "carry"
 					carry.at = now
 					carry.press = 0
-				elseif now - carry.press >= 1.4 then
+				elseif now - carry.press >= 0.5 then
 					carry.press = now
 					holdPrompt(cprompt)
 				end
@@ -4311,7 +4874,7 @@ local function autoCollectTick(now)
 				end
 				-- the game keeps a held prop glued to the character, so wait for
 				-- it to arrive (or give it a few seconds) before dropping.
-				if not here or not slot or (here - slot.Position).Magnitude <= 9 or now - carry.at > 3.5 then
+				if not here or not slot or (here - slot.Position).Magnitude <= 9 or now - carry.at > 2.0 then
 					carry.stage = "drop"
 					carry.at = now
 					carry.press = 0
@@ -4342,7 +4905,7 @@ local function autoCollectTick(now)
 					end)
 					return
 				end
-				if now - carry.at > 0.3 and now - carry.press >= 1.2 then
+				if now - carry.at > 0.3 and now - carry.press >= 0.45 then
 					carry.press = now
 					carry.tries = carry.tries + 1
 					holdPrompt(cprompt)
@@ -4371,7 +4934,9 @@ local function autoCollectTick(now)
 			-- not progressing (unreachable, or a gesture we cannot fire):
 			-- sideline it for a while so the tick can service other targets.
 			-- 12s leaves room for multi-fire tasks (trash needs several fires
-			-- per debris part) instead of abandoning them half-cleared.
+			-- per debris part) instead of abandoning them half-cleared.  Any
+			-- task GUI we opened is dismissed so its screen effect never sticks.
+			TASK.close(map, t)
 			AC.skip[t] = now + 20
 			AC.target = nil
 			AC.nextAt = now + STATE.collectDelay
@@ -4426,6 +4991,10 @@ local function autoCollectTick(now)
 		AC.snowMode = nil
 		AC.snowTries = 0
 		AC.snowVal0 = nil
+		AC.valveOpened = false
+		AC.mgOpened = false
+		AC.chestOpened = false
+		AC.qteAdd = nil
 		AC.value0 = objectiveValueFor(model)
 		local shrp = model:FindFirstChild("HumanoidRootPart")
 		AC.touch = shrp ~= nil and isShardAvailable(shrp)
@@ -4446,7 +5015,7 @@ local function autoCollectTick(now)
 				AC.skip[m] = nil
 			end
 		end
-		AC.nextAt = now + 0.5
+		AC.nextAt = now + 0.2
 	end
 end
 
@@ -4475,7 +5044,7 @@ local function taskLoop()
 			lastTP = now
 			pcall(TP.refresh)
 		end
-		task.wait(0.05)
+		task.wait(0.03)
 	end
 end
 
@@ -4970,10 +5539,9 @@ local function stepSprintAssist()
 	local char = LP.Character
 	local hum = char and char:FindFirstChildOfClass("Humanoid")
 	local asp = char and char:FindFirstChild("Aspects")
-	local wanting = (tonumber(STATE.speedMult) or 1) > 1
-		and UserInputService:IsKeyDown(Enum.KeyCode.LeftShift)
+	local boosted = (tonumber(STATE.speedMult) or 1) > 1
 
-	if not (wanting and hum and asp) then
+	if not (boosted and hum and asp) then
 		if sprintAssist and hum and asp then
 			sprintAssist = false
 			local w = asp:FindFirstChild("WalkSpeed")
@@ -4986,8 +5554,35 @@ local function stepSprintAssist()
 		return
 	end
 
+	-- Keep the game's sprint gate open.  Its own sprint loop only applies
+	-- Humanoid.WalkSpeed = SprintSpeed * SpeedValue while
+	-- Aspects.WalkSpeed.Value <= Humanoid.WalkSpeed.  Scaling the walk aspect up
+	-- while the humanoid still sat at the old, lower speed made every fresh
+	-- Shift press fail outright - the "can't sprint above ~1.2x" bug.  Running
+	-- on the fast tick means the gate is already open when Shift goes down.
+	local wa = asp:FindFirstChild("WalkSpeed")
+	local knocked = char:FindFirstChild("Knockback") ~= nil
+	if wa and hum.WalkSpeed > 1 and not knocked and hum.WalkSpeed < wa.Value - 0.05 then
+		pcall(function()
+			hum.WalkSpeed = wa.Value
+		end)
+	end
+
 	local sprint = asp:FindFirstChild("SprintSpeed")
 	if not sprint then
+		return
+	end
+	local held = UserInputService:IsKeyDown(Enum.KeyCode.LeftShift)
+	if not held then
+		if sprintAssist then
+			sprintAssist = false
+			local w = asp:FindFirstChild("WalkSpeed")
+			if w and hum.WalkSpeed > 0 then
+				pcall(function()
+					hum.WalkSpeed = w.Value
+				end)
+			end
+		end
 		return
 	end
 	local can = asp:FindFirstChild("CanSprint")
@@ -4999,7 +5594,7 @@ local function stepSprintAssist()
 	local ok = hum.WalkSpeed > 1
 		and (can == nil or can.Value)
 		and (stam == nil or stam.Value > 0)
-		and char:FindFirstChild("Knockback") == nil
+		and not knocked
 	if ok and hum.WalkSpeed < target - 0.05 then
 		pcall(function()
 			hum.WalkSpeed = target
@@ -5589,6 +6184,123 @@ function freeCamera()
 	return true
 end
 
+-- void rescue
+-- Noclip (or an occasional server fling) can leave the character falling
+-- forever below the map with no floor to catch it.  On each status tick, if we
+-- are far below any sane floor, put us back on a spawn point.
+local function voidRescue()
+	if not STATE.voidRescue then
+		return
+	end
+	local char = LP.Character
+	local hrp = char and char:FindFirstChild("HumanoidRootPart")
+	if not (hrp and hrp:IsA("BasePart")) then
+		return
+	end
+	if hrp.Position.Y > -300 then
+		return
+	end
+	local map = mapNow()
+	local sp = map and map:FindFirstChild("Spawns")
+	local bestY, target
+	if sp then
+		for _, d in ipairs(sp:GetDescendants()) do
+			if d:IsA("BasePart") then
+				local y = d.Position.Y
+				if not bestY or y > bestY then
+					bestY = y
+					target = d.Position
+				end
+			end
+		end
+	end
+	if not target then
+		local sl = Workspace:FindFirstChildWhichIsA("SpawnLocation", true)
+		if sl then
+			target = sl.Position
+		end
+	end
+	if target then
+		pcall(function()
+			char:PivotTo(CFrame.new(target + Vector3.new(0, 3, 0)))
+		end)
+	end
+end
+
+-- vapor skin spoof (client-only cosmetic) ----------------------------------
+-- The lobby reads these Inventory values to decide what is owned/equipped.
+-- We cannot change the real (server-owned) profile, so this only edits the
+-- local replica: the lobby shows every tier as owned and tier IV as equipped,
+-- while the in-round monster stays whatever the server spawned. A snapshot of
+-- the original values is kept so turning the toggle off restores them.
+local skinSpoofSnapshot = nil
+local function applySkinSpoof()
+	local inv = LP:FindFirstChild("Inventory")
+	local monsters = inv and inv:FindFirstChild("Monsters")
+	local vap = monsters and monsters:FindFirstChild("Vapor")
+	if not (inv and vap) then
+		return
+	end
+
+	if STATE.skinSpoof then
+		if not skinSpoofSnapshot then
+			local snap = { tiers = {}, skin = nil, monsterSkin = nil }
+			for _, n in ipairs({ "Vapor-I", "Vapor-II", "Vapor-III", "Vapor-IV" }) do
+				local b = vap:FindFirstChild(n)
+				if b and b:IsA("BoolValue") then
+					snap.tiers[n] = b.Value
+				end
+			end
+			local sk = vap:FindFirstChild("Vapor-Skin")
+			if sk and sk:IsA("StringValue") then
+				snap.skin = sk.Value
+			end
+			local ms = inv:FindFirstChild("MonsterSkin")
+			if ms and ms:IsA("StringValue") then
+				snap.monsterSkin = ms.Value
+			end
+			skinSpoofSnapshot = snap
+		end
+		for _, n in ipairs({ "Vapor-I", "Vapor-II", "Vapor-III", "Vapor-IV" }) do
+			local b = vap:FindFirstChild(n)
+			if b and b:IsA("BoolValue") and b.Value ~= true then
+				b.Value = true
+			end
+		end
+		local sk = vap:FindFirstChild("Vapor-Skin")
+		if sk and sk:IsA("StringValue") and sk.Value ~= "Vapor-IV" then
+			sk.Value = "Vapor-IV"
+		end
+		local ms = inv:FindFirstChild("MonsterSkin")
+		if ms and ms:IsA("StringValue") and ms.Value:match("^Vapor") and ms.Value ~= "Vapor-IV" then
+			ms.Value = "Vapor-IV"
+		end
+	elseif skinSpoofSnapshot then
+		local snap = skinSpoofSnapshot
+		for n, v in pairs(snap.tiers) do
+			local b = vap:FindFirstChild(n)
+			if b and b:IsA("BoolValue") then
+				pcall(function()
+					b.Value = v
+				end)
+			end
+		end
+		local sk = vap:FindFirstChild("Vapor-Skin")
+		if sk and snap.skin then
+			pcall(function()
+				sk.Value = snap.skin
+			end)
+		end
+		local ms = inv:FindFirstChild("MonsterSkin")
+		if ms and snap.monsterSkin then
+			pcall(function()
+				ms.Value = snap.monsterSkin
+			end)
+		end
+		skinSpoofSnapshot = nil
+	end
+end
+
 local function statusLoop()
 	while running do
 		pcall(applyFullbright)
@@ -5596,6 +6308,8 @@ local function statusLoop()
 		pcall(applyStamina)
 		pcall(applySpeed)
 		pcall(applyHitbox)
+		pcall(voidRescue)
+		pcall(applySkinSpoof)
 		pcall(function()
 			for _, fn in ipairs(colorSyncers) do
 				fn()
@@ -5754,6 +6468,13 @@ handle.instantPrompt = function(on)
 	saveConfig()
 	return STATE.instantPrompt
 end
+handle.voidRescue = function(on)
+	if on ~= nil then
+		STATE.voidRescue = on ~= false
+		saveConfig()
+	end
+	return STATE.voidRescue
+end
 handle.hitbox = function(mult)
 	STATE.hitboxMult = math.clamp(tonumber(mult) or 1, 1, 10)
 	applyHitbox()
@@ -5851,5 +6572,5 @@ genv.PillarChaseHub = handle
 
 print("[PCHub] v2 loaded. Monster=red, Survivor=green, Sentinel=amber.")
 print(string.format("[PCHub] %s = window, keys 1-7 = tabs, H = panic hide. Cursor frees while the window is open and is handed straight back on close. %d players seen.", tostring(STATE.keybind), #Players:GetPlayers()))
-print("[PCHub] Extras: infinite stamina, speed booster, anti-AFK, fullbright, no fog, noclip, FOV zoom, exit ESP, crosshair, fps/ping.")
-print("[PCHub] Tasks: round-aware. Objective ESP on all maps; 'Auto tasks' is one OFF-by-default toggle. Lobby/dead = idle.")
+print("[PCHub] Extras: infinite stamina, speed booster, anti-AFK, fullbright, no fog, noclip, FOV zoom, exit ESP, crosshair, fps/ping, Vapor skin spoof.")
+print("[PCHub] Tasks: round-aware. Objective ESP on all maps; 'Auto tasks' is ON by default. Lobby/dead = idle.")
