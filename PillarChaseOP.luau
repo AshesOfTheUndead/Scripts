@@ -2,7 +2,7 @@
 	Pillar Chase - Role Highlight Hub  (v2)
 	Place 121255181515820  (Pillar Chase 2 / Halloween PT1)
 
-	UI
+	UI (inspired by vaez idk that youtuber exploiter guy)
 	  Dark "Product Faker"-style window: Roboto Condensed typography, near
 	  black panels, a centred floating window with shadow + hairline stroke,
 	  a bottom icon rail with a sliding indicator, toast notifications and
